@@ -789,15 +789,19 @@ func (m *ProbeManager) performEgressProbe(hash node.Hash) (netip.Addr, egressPro
 		return netip.Addr{}, egressProbeFetchError, err
 	}
 
+	// Only mark healthy after the body is a valid Cloudflare trace.
+	// Fetch success alone is not enough — a non-trace body (captive portal,
+	// error page, truncated response) must count as probe failure.
+	ip, loc, err := ParseCloudflareTrace(body)
+	if err != nil {
+		m.pool.RecordResult(hash, false)
+		m.pool.UpdateNodeEgressIP(hash, nil, nil)
+		return netip.Addr{}, egressProbeParseError, err
+	}
+
 	m.pool.RecordResult(hash, true)
 	if latency > 0 {
 		m.pool.RecordLatency(hash, egressTraceDomain, &latency)
-	}
-
-	ip, loc, err := ParseCloudflareTrace(body)
-	if err != nil {
-		m.pool.UpdateNodeEgressIP(hash, nil, nil)
-		return netip.Addr{}, egressProbeParseError, err
 	}
 	m.pool.UpdateNodeEgressIP(hash, &ip, loc)
 	return ip, egressProbeNoError, nil

@@ -114,6 +114,54 @@ func TestProbeEgress_Failure(t *testing.T) {
 	}
 }
 
+// TestProbeEgress_ParseFailure verifies that a successful HTTP fetch with an
+// unparseable Cloudflare-trace body is treated as a probe failure, not success.
+func TestProbeEgress_ParseFailure(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+
+	hash := node.HashFromRawOptions([]byte(`{"type":"egress-parse-fail"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"egress-parse-fail"}`), "sub1")
+
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+
+	// Seed a prior healthy egress. Parse failure is attempt-only for IP metadata
+	// (UpdateNodeEgressIP(nil,nil) keeps last-known values) but must still
+	// RecordResult(false) so the node is not marked healthy.
+	priorIP := netip.MustParseAddr("198.51.100.50")
+	entry.SetEgressIP(priorIP)
+	entry.SetEgressRegion("us")
+
+	mgr := NewProbeManager(ProbeConfig{
+		Pool: pool,
+		Fetcher: func(_ node.Hash, url string) ([]byte, time.Duration, error) {
+			// HTTP succeeded, but body is not a Cloudflare trace (e.g. captive portal).
+			return []byte("<html>login required</html>"), 25 * time.Millisecond, nil
+		},
+	})
+
+	mgr.probeEgress(hash, entry)
+
+	if entry.FailureCount.Load() != 1 {
+		t.Fatalf("expected 1 failure after parse error, got %d", entry.FailureCount.Load())
+	}
+	if entry.HasLatency() {
+		t.Fatal("should not record latency when egress parse fails")
+	}
+	if got := entry.GetEgressIP(); got != priorIP {
+		t.Fatalf("last-known egress IP should be kept on parse failure, got %v want %v", got, priorIP)
+	}
+	if got := entry.GetEgressRegion(); got != "us" {
+		t.Fatalf("last-known egress region should be kept on parse failure, got %q", got)
+	}
+}
+
 // TestProbeEgress_CircuitBreak verifies consecutive failures trigger circuit break.
 func TestProbeEgress_CircuitBreak(t *testing.T) {
 	pool := topology.NewGlobalNodePool(topology.PoolConfig{

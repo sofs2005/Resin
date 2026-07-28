@@ -1065,7 +1065,7 @@ Resin 需要做实事与历史的统计数据，用于 Dashboard 展示。
   "max_consecutive_failures": 3,
   "max_latency_test_interval": "1h",
   "max_authority_latency_test_interval": "3h",
-  "max_egress_test_interval": "24h",
+  "max_egress_test_interval": "1h",
   "latency_test_url": "https://www.gstatic.com/generate_204",
   "latency_authorities": ["gstatic.com", "google.com", "cloudflare.com", "github.com"],
   "p2c_latency_window": "10m",
@@ -1092,7 +1092,7 @@ Resin 需要做实事与历史的统计数据，用于 Dashboard 展示。
   "max_consecutive_failures": 3,
   "max_latency_test_interval": "1h",
   "max_authority_latency_test_interval": "3h",
-  "max_egress_test_interval": "24h",
+  "max_egress_test_interval": "1h",
   "latency_test_url": "https://www.gstatic.com/generate_204",
   "latency_authorities": ["gstatic.com", "google.com", "cloudflare.com", "github.com"],
   "p2c_latency_window": "10m",
@@ -2368,7 +2368,7 @@ Resin 支持通过 API (`PATCH /system/config`) 动态调整大部分全局运�
 * `MaxConsecutiveFailures`: 触发熔断的连续失败次数阈值。默认 3。
 * `MaxLatencyTestInterval`: 节点最大延迟探测间隔。最小 30 秒。默认 1 小时。
 * `MaxAuthorityLatencyTestInterval`: 权威域名（如 cloudflare.com）的最大延迟探测间隔。最小 30 秒。默认 3 小时。
-* `MaxEgressTestInterval`: 节点出口 IP 探测的最大间隔。最小 30 秒。默认 1 天。
+* `MaxEgressTestInterval`: 节点出口 IP 探测的最大间隔。最小 30 秒。默认 1 小时。
 
 #### 探测设置
 * `LatencyTestURL`: 主动延迟探测的目标 URL。默认 `https://www.gstatic.com/generate_204`。一定属于 LatencyAuthorities 之一。如果不属于就加入。

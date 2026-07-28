@@ -46,7 +46,8 @@ func NewDefaultRuntimeConfig() *RuntimeConfig {
 		MaxConsecutiveFailures:          3,
 		MaxLatencyTestInterval:          Duration(1 * time.Hour),
 		MaxAuthorityLatencyTestInterval: Duration(3 * time.Hour),
-		MaxEgressTestInterval:           Duration(24 * time.Hour),
+		// Free/public proxies churn quickly; 24h left dead nodes marked healthy too long.
+		MaxEgressTestInterval: Duration(1 * time.Hour),
 
 		LatencyTestURL:     "https://www.gstatic.com/generate_204",
 		LatencyAuthorities: []string{"gstatic.com", "google.com", "cloudflare.com", "github.com"},

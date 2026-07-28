@@ -2,6 +2,7 @@ package netutil
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Resinat/Resin/internal/testutil"
 )
@@ -54,6 +56,68 @@ func TestHTTPGetViaOutbound_AllowNon200(t *testing.T) {
 	}
 	if string(body) != "probe-body" {
 		t.Fatalf("unexpected body %q", string(body))
+	}
+}
+
+// TestHTTPGetViaOutbound_HTTPSRequireStatusOK exercises the production probe path:
+// outbound DialContext → TLS handshake → HTTPS GET with RequireStatusOK.
+// For HTTP-proxy outbounds, sing-box performs CONNECT under DialContext; this
+// test validates the shared HTTPS client stack that all probes rely on.
+func TestHTTPGetViaOutbound_HTTPSRequireStatusOK(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method: got %s, want GET", r.Method)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ip=203.0.113.9\nloc=us\n"))
+	}))
+	defer srv.Close()
+
+	ob, err := (&testutil.StubOutboundBuilder{}).Build(nil)
+	if err != nil {
+		t.Fatalf("build outbound: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	body, latency, err := HTTPGetViaOutbound(ctx, ob, srv.URL, OutboundHTTPOptions{
+		RequireStatusOK: true,
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	})
+	if err != nil {
+		t.Fatalf("HTTPS GET via outbound failed: %v", err)
+	}
+	if !strings.Contains(string(body), "ip=203.0.113.9") {
+		t.Fatalf("unexpected body %q", string(body))
+	}
+	// TLSHandshakeDone should record a positive latency sample on success.
+	if latency <= 0 {
+		t.Fatalf("expected positive TLS handshake latency, got %v", latency)
+	}
+}
+
+func TestHTTPGetViaOutbound_HTTPSNon200Rejected(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("unavailable"))
+	}))
+	defer srv.Close()
+
+	ob, err := (&testutil.StubOutboundBuilder{}).Build(nil)
+	if err != nil {
+		t.Fatalf("build outbound: %v", err)
+	}
+
+	_, _, err = HTTPGetViaOutbound(context.Background(), ob, srv.URL, OutboundHTTPOptions{
+		RequireStatusOK: true,
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	})
+	if err == nil {
+		t.Fatal("expected non-200 HTTPS status to return error")
+	}
+	if !strings.Contains(err.Error(), "unexpected status 503") {
+		t.Fatalf("expected status error, got: %v", err)
 	}
 }
 

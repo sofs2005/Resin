@@ -292,7 +292,7 @@ func newTopologyRuntime(
 				return nil, 0, outbound.ErrOutboundNotReady
 			}
 			return netutil.HTTPGetViaOutbound(ctx, *outboundPtr, url, netutil.OutboundHTTPOptions{
-				RequireStatusOK: false,
+				RequireStatusOK: true,
 				OnConnLifecycle: func(op netutil.ConnLifecycleOp) {
 					if onProbeConnLifecycle != nil {
 						onProbeConnLifecycle(op)

@@ -30,6 +30,10 @@ type OutboundHTTPOptions struct {
 	RequireStatusOK bool
 	// UserAgent overrides the request User-Agent when non-empty.
 	UserAgent string
+	// TLSClientConfig is applied to the request transport when non-nil.
+	// Production probes leave this nil (system trust store); tests may inject
+	// InsecureSkipVerify for httptest TLS servers.
+	TLSClientConfig *tls.Config
 	// OnConnLifecycle is called with open/close lifecycle events to track connection
 	// lifecycle for metrics. Set by probe callers to count outbound connections;
 	// left nil for download callers (GeoIP, subscription) to exclude from stats.
@@ -60,6 +64,7 @@ func HTTPGetViaOutbound(
 			}
 			return conn, nil
 		},
+		TLSClientConfig:   opts.TLSClientConfig,
 		DisableKeepAlives: true,
 		ForceAttemptHTTP2: true,
 	}
