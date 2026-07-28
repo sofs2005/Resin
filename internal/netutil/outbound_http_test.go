@@ -30,10 +30,32 @@ func TestHTTPGetViaOutbound_RequireStatusOK(t *testing.T) {
 		RequireStatusOK: true,
 	})
 	if err == nil {
-		t.Fatal("expected non-200 status to return error")
+		t.Fatal("expected non-2xx status to return error")
 	}
 	if !strings.Contains(err.Error(), "unexpected status 404") {
 		t.Fatalf("expected status error, got: %v", err)
+	}
+}
+
+// generate_204-style probes return 204 No Content; RequireStatusOK must accept any 2xx.
+func TestHTTPGetViaOutbound_RequireStatusOK_Accepts204(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	ob, err := (&testutil.StubOutboundBuilder{}).Build(nil)
+	if err != nil {
+		t.Fatalf("build outbound: %v", err)
+	}
+	body, _, err := HTTPGetViaOutbound(context.Background(), ob, srv.URL, OutboundHTTPOptions{
+		RequireStatusOK: true,
+	})
+	if err != nil {
+		t.Fatalf("expected 204 to pass RequireStatusOK, got: %v", err)
+	}
+	if len(body) != 0 {
+		t.Fatalf("expected empty body for 204, got %q", string(body))
 	}
 }
 

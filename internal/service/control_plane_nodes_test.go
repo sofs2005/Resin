@@ -1,7 +1,9 @@
 package service
 
 import (
+	"fmt"
 	"net/netip"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -521,5 +523,47 @@ func TestProbeEgress_ReturnsRegion(t *testing.T) {
 	}
 	if got.Region != "jp" {
 		t.Fatalf("region: got %q, want %q", got.Region, "jp")
+	}
+}
+
+func TestProbeEgress_SurfacesRootCauseInMessage(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	pool := newNodeListTestPool(subMgr)
+
+	sub := subscription.NewSubscription("sub-a", "sub-a", "https://example.com/a", true, false)
+	subMgr.Register(sub)
+
+	hash := addRoutableNodeForSubscription(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"ss","server":"1.1.1.1","port":443}`),
+		"203.0.113.60",
+	)
+
+	cp := &ControlPlaneService{
+		Pool:   pool,
+		SubMgr: subMgr,
+		ProbeMgr: probe.NewProbeManager(probe.ProbeConfig{
+			Pool: pool,
+			Fetcher: func(_ node.Hash, _ string) ([]byte, time.Duration, error) {
+				return nil, 0, fmt.Errorf("outbound fetch: unexpected status 403 from https://cloudflare.com/cdn-cgi/trace")
+			},
+		}),
+	}
+
+	_, err := cp.ProbeEgress(hash.Hex())
+	if err == nil {
+		t.Fatal("expected ProbeEgress to fail")
+	}
+	svcErr, ok := err.(*ServiceError)
+	if !ok {
+		t.Fatalf("expected *ServiceError, got %T", err)
+	}
+	if svcErr.Code != "INTERNAL" {
+		t.Fatalf("code: got %q, want INTERNAL", svcErr.Code)
+	}
+	if !strings.Contains(svcErr.Message, "unexpected status 403") {
+		t.Fatalf("message should include root cause, got %q", svcErr.Message)
 	}
 }

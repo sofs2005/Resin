@@ -26,7 +26,9 @@ const (
 
 // OutboundHTTPOptions controls outbound-backed HTTP execution behavior.
 type OutboundHTTPOptions struct {
-	// RequireStatusOK enforces HTTP 200 status; otherwise any status is accepted.
+	// RequireStatusOK enforces a successful HTTP status (2xx).
+	// Latency probes use generate_204 (HTTP 204); egress probes use Cloudflare
+	// trace (HTTP 200). Non-2xx responses are rejected when this is true.
 	RequireStatusOK bool
 	// UserAgent overrides the request User-Agent when non-empty.
 	UserAgent string
@@ -52,6 +54,8 @@ func HTTPGetViaOutbound(
 		return nil, 0, fmt.Errorf("outbound fetch: outbound is nil")
 	}
 
+	// ForceAttemptHTTP2 is left false: many proxy tunnels mishandle h2 negotiation
+	// (intermittent failures on re-probe). HTTP/1.1 is the stable default for probes.
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			conn, err := outbound.DialContext(ctx, network, M.ParseSocksaddr(addr))
@@ -66,7 +70,7 @@ func HTTPGetViaOutbound(
 		},
 		TLSClientConfig:   opts.TLSClientConfig,
 		DisableKeepAlives: true,
-		ForceAttemptHTTP2: true,
+		ForceAttemptHTTP2: false,
 	}
 
 	client := &http.Client{
@@ -102,7 +106,7 @@ func HTTPGetViaOutbound(
 	}
 	defer resp.Body.Close()
 
-	if opts.RequireStatusOK && resp.StatusCode != http.StatusOK {
+	if opts.RequireStatusOK && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
 		return nil, latency, fmt.Errorf("outbound fetch: unexpected status %d from %s", resp.StatusCode, url)
 	}
 

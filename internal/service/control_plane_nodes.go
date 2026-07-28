@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -231,7 +232,8 @@ func (s *ControlPlaneService) ProbeEgress(hashStr string) (*probe.EgressProbeRes
 	}
 	result, err := s.ProbeMgr.ProbeEgressSync(h)
 	if err != nil {
-		return nil, internal("egress probe failed", err)
+		// Surface root cause in Message so WebUI can show more than bare INTERNAL.
+		return nil, internal(fmt.Sprintf("egress probe failed: %v", err), err)
 	}
 	result.Region = entry.GetRegion(nil)
 	if s.GeoIP != nil {
@@ -251,7 +253,7 @@ func (s *ControlPlaneService) ProbeLatency(hashStr string) (*probe.LatencyProbeR
 	}
 	result, err := s.ProbeMgr.ProbeLatencySync(h)
 	if err != nil {
-		return nil, internal("latency probe failed", err)
+		return nil, internal(fmt.Sprintf("latency probe failed: %v", err), err)
 	}
 	return result, nil
 }
