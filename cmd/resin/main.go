@@ -275,7 +275,8 @@ func newTopologyRuntime(
 	if err != nil {
 		return nil, fmt.Errorf("singbox builder: %w", err)
 	}
-	outboundMgr := outbound.NewOutboundManager(pool, singboxBuilder)
+	// http/socks use a native simple dialer; ss/vmess/etc stay on sing-box.
+	outboundMgr := outbound.NewOutboundManager(pool, outbound.NewDualOutboundBuilder(singboxBuilder))
 
 	probeMgr := probe.NewProbeManager(probe.ProbeConfig{
 		Pool:        pool,
