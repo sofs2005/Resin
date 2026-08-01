@@ -228,6 +228,7 @@ func TestChooseSameIPRotationCandidate_PicksLowestLatency(t *testing.T) {
 		pool.GetEntry,
 		func(_ string, _ node.Hash) (string, bool, []string, bool) { return "", true, nil, true },
 		func(_ netip.Addr) string { return "" },
+		3,
 	)
 
 	hash, ok := chooseSameIPRotationCandidate(
@@ -265,6 +266,7 @@ func TestRouteRequest_SameIPRotationMissRecreatesLease(t *testing.T) {
 		pool.GetEntry,
 		func(_ string, _ node.Hash) (string, bool, []string, bool) { return "", true, nil, true },
 		func(_ netip.Addr) string { return "" },
+		3,
 	)
 
 	var events []LeaseEvent
@@ -276,6 +278,9 @@ func TestRouteRequest_SameIPRotationMissRecreatesLease(t *testing.T) {
 	})
 
 	oldExpiry := time.Now().Add(time.Hour).UnixNano()
+	// Windows clock granularity can make back-to-back Now().Add(ttl) values equal;
+	// advance slightly so a recreated lease expiry is observably different.
+	time.Sleep(20 * time.Millisecond)
 	oldLease := Lease{
 		NodeHash:       currentHash,
 		EgressIP:       currentEntry.GetEgressIP(),

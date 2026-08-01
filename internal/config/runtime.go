@@ -15,6 +15,10 @@ type RuntimeConfig struct {
 
 	// Health check
 	MaxConsecutiveFailures          int      `json:"max_consecutive_failures"`
+	// MinConsecutiveSuccesses is the number of consecutive successful probes
+	// required before a node is considered healthy/stable. Nodes that pass
+	// fewer checks remain available (routable fallback) but not healthy.
+	MinConsecutiveSuccesses         int      `json:"min_consecutive_successes"`
 	MaxLatencyTestInterval          Duration `json:"max_latency_test_interval"`
 	MaxAuthorityLatencyTestInterval Duration `json:"max_authority_latency_test_interval"`
 	MaxEgressTestInterval           Duration `json:"max_egress_test_interval"`
@@ -44,6 +48,7 @@ func NewDefaultRuntimeConfig() *RuntimeConfig {
 		ReverseProxyLogRespBodyMaxBytes:    1024,
 
 		MaxConsecutiveFailures:          3,
+		MinConsecutiveSuccesses:         3,
 		MaxLatencyTestInterval:          Duration(1 * time.Hour),
 		MaxAuthorityLatencyTestInterval: Duration(3 * time.Hour),
 		// Free/public proxies churn quickly; 24h left dead nodes marked healthy too long.

@@ -41,7 +41,8 @@ func randomRoute(
 	defer randomRouteRNGPool.Put(rng)
 
 	pick := func() (node.Hash, bool) {
-		return view.RandomPick(rng)
+		// Prefer stable-healthy nodes; fall back to available when none are healthy.
+		return view.RandomPickPreferHealthy(rng)
 	}
 
 	// Pick 1st candidate.

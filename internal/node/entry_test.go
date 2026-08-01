@@ -261,19 +261,44 @@ func TestNodeEntry_Outbound(t *testing.T) {
 
 func TestNodeEntry_IsHealthy(t *testing.T) {
 	e := NewNodeEntry(Hash{}, nil, time.Now(), 0)
-	if e.IsHealthy() {
+	if e.IsAvailable() {
+		t.Fatal("node without outbound should not be available")
+	}
+	if e.IsHealthy(3) {
 		t.Fatal("node without outbound should not be healthy")
 	}
 
 	ob := testutil.NewNoopOutbound()
 	e.Outbound.Store(&ob)
-	if !e.IsHealthy() {
-		t.Fatal("node with outbound and no circuit should be healthy")
+	if !e.IsAvailable() {
+		t.Fatal("node with outbound and no circuit should be available")
+	}
+	if e.IsHealthy(3) {
+		t.Fatal("available node without success streak should not be healthy")
+	}
+
+	e.SuccessCount.Store(2)
+	if e.IsHealthy(3) {
+		t.Fatal("success streak below threshold should not be healthy")
+	}
+	if e.ResolveHealthStatus(3) != HealthStatusAvailable {
+		t.Fatalf("expected available, got %s", e.ResolveHealthStatus(3))
+	}
+
+	e.SuccessCount.Store(3)
+	if !e.IsHealthy(3) {
+		t.Fatal("success streak at threshold should be healthy")
+	}
+	if e.ResolveHealthStatus(3) != HealthStatusHealthy {
+		t.Fatalf("expected healthy, got %s", e.ResolveHealthStatus(3))
 	}
 
 	e.CircuitOpenSince.Store(time.Now().UnixNano())
-	if e.IsHealthy() {
-		t.Fatal("circuit-open node should not be healthy")
+	if e.IsAvailable() || e.IsHealthy(3) {
+		t.Fatal("circuit-open node should not be available/healthy")
+	}
+	if e.ResolveHealthStatus(3) != HealthStatusUnhealthy {
+		t.Fatalf("expected unhealthy, got %s", e.ResolveHealthStatus(3))
 	}
 }
 

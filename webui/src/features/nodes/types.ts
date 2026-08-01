@@ -13,6 +13,8 @@ export type NodeSummary = {
   last_error?: string;
   circuit_open_since?: string;
   failure_count: number;
+  success_count: number;
+  health_status: "healthy" | "available" | "unhealthy";
   egress_ip?: string;
   reference_latency_ms?: number;
   region?: string;
@@ -52,6 +54,7 @@ export type NodeListFilters = {
   enabled?: boolean;
   circuit_open?: boolean;
   has_outbound?: boolean;
+  health_status?: "healthy" | "available" | "unhealthy";
 };
 
 export type NodeListQuery = NodeListFilters & {

@@ -25,6 +25,7 @@ type NodeFilters struct {
 	EgressIP       *string
 	ProbedSince    *time.Time
 	TagKeyword     *string
+	HealthStatus   *string
 }
 
 // ListNodes returns nodes from the pool with optional filters.
@@ -180,6 +181,17 @@ func (s *ControlPlaneService) nodeEntryMatchesFilters(
 	// Circuit open filter.
 	if filters.CircuitOpen != nil {
 		if entry.IsCircuitOpen() != *filters.CircuitOpen {
+			return false
+		}
+	}
+	// Health status filter (healthy|available|unhealthy).
+	if filters.HealthStatus != nil {
+		minSuccesses := 3
+		if s != nil && s.Pool != nil {
+			minSuccesses = s.Pool.CurrentMinConsecutiveSuccesses()
+		}
+		status := string(entry.ResolveHealthStatus(minSuccesses))
+		if status != strings.ToLower(strings.TrimSpace(*filters.HealthStatus)) {
 			return false
 		}
 	}

@@ -101,6 +101,7 @@ func (p *routerTestPool) rebuildPlatformView(plat *platform.Platform) {
 		},
 		func(_ string, _ node.Hash) (string, bool, []string, bool) { return "", true, nil, true },
 		func(_ netip.Addr) string { return "" },
+		3,
 	)
 }
 
@@ -125,6 +126,7 @@ func newRoutableEntry(t *testing.T, raw, ip string) (node.Hash, *node.NodeEntry)
 	// Any non-nil outbound value is enough for platform filtering.
 	ob := testutil.NewNoopOutbound()
 	e.Outbound.Store(&ob)
+	e.SuccessCount.Store(3)
 
 	return h, e
 }
@@ -189,6 +191,7 @@ func TestRouteRequest_SameIPRotationPrefersTargetLatencySample(t *testing.T) {
 		pool.GetEntry,
 		func(_ string, _ node.Hash) (string, bool, []string, bool) { return "", true, nil, true },
 		func(_ netip.Addr) string { return "" },
+		3,
 	)
 
 	order := make([]node.Hash, 0, 2)

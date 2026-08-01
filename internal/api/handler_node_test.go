@@ -53,6 +53,7 @@ func markNodeHealthyForNodeListTest(t *testing.T, cp *service.ControlPlaneServic
 	ob := testutil.NewNoopOutbound()
 	entry.Outbound.Store(&ob)
 	entry.CircuitOpenSince.Store(0)
+	entry.SuccessCount.Store(3)
 }
 
 func TestHandleListNodes_TagKeywordFiltersByNodeName(t *testing.T) {

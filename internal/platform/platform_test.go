@@ -24,6 +24,8 @@ func makeFullyRoutableEntry(hash node.Hash, subIDs ...string) *node.NodeEntry {
 	ob := testutil.NewNoopOutbound()
 	e.Outbound.Store(&ob)
 	e.SetEgressIP(netip.MustParseAddr("1.2.3.4"))
+	// Proven stable so default min_consecutive_successes treats it as healthy.
+	e.SuccessCount.Store(3)
 	return e
 }
 
@@ -40,7 +42,7 @@ func TestPlatform_EvaluateNode_AllPass(t *testing.T) {
 
 	p.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
 		fn(h, entry)
-	}, alwaysLookup, usGeoLookup)
+	}, alwaysLookup, usGeoLookup, 3)
 
 	if p.View().Size() != 1 {
 		t.Fatalf("expected 1 routable node, got %d", p.View().Size())
@@ -55,7 +57,7 @@ func TestPlatform_EvaluateNode_CircuitOpen(t *testing.T) {
 
 	p.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
 		fn(h, entry)
-	}, alwaysLookup, usGeoLookup)
+	}, alwaysLookup, usGeoLookup, 3)
 
 	if p.View().Size() != 0 {
 		t.Fatal("circuit-broken node should not be routable")
@@ -74,7 +76,7 @@ func TestPlatform_EvaluateNode_NoLatency(t *testing.T) {
 
 	p.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
 		fn(h, entry)
-	}, alwaysLookup, usGeoLookup)
+	}, alwaysLookup, usGeoLookup, 3)
 
 	if p.View().Size() != 0 {
 		t.Fatal("node without latency should not be routable")
@@ -89,7 +91,7 @@ func TestPlatform_EvaluateNode_NoOutbound(t *testing.T) {
 
 	p.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
 		fn(h, entry)
-	}, alwaysLookup, usGeoLookup)
+	}, alwaysLookup, usGeoLookup, 3)
 
 	if p.View().Size() != 0 {
 		t.Fatal("node without outbound should not be routable")
@@ -104,7 +106,7 @@ func TestPlatform_EvaluateNode_NoEgressIP(t *testing.T) {
 
 	p.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
 		fn(h, entry)
-	}, alwaysLookup, usGeoLookup)
+	}, alwaysLookup, usGeoLookup, 3)
 
 	if p.View().Size() != 0 {
 		t.Fatal("node without egress IP should not be routable")
@@ -120,7 +122,7 @@ func TestPlatform_EvaluateNode_RegexFilter(t *testing.T) {
 	// Lookup returns "TestSub/us-node" which matches "us".
 	p.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
 		fn(h, entry)
-	}, alwaysLookup, usGeoLookup)
+	}, alwaysLookup, usGeoLookup, 3)
 
 	if p.View().Size() != 1 {
 		t.Fatal("node matching regex should be routable")
@@ -130,7 +132,7 @@ func TestPlatform_EvaluateNode_RegexFilter(t *testing.T) {
 	p2 := NewPlatform("p2", "Test", []*regexp.Regexp{regexp.MustCompile("^jp")}, nil)
 	p2.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
 		fn(h, entry)
-	}, alwaysLookup, usGeoLookup)
+	}, alwaysLookup, usGeoLookup, 3)
 
 	if p2.View().Size() != 0 {
 		t.Fatal("node not matching regex should not be routable")
@@ -144,7 +146,7 @@ func TestPlatform_EvaluateNode_RegionFilter(t *testing.T) {
 
 	p.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
 		fn(h, entry)
-	}, alwaysLookup, usGeoLookup)
+	}, alwaysLookup, usGeoLookup, 3)
 
 	if p.View().Size() != 1 {
 		t.Fatal("node in allowed region should be routable")
@@ -154,7 +156,7 @@ func TestPlatform_EvaluateNode_RegionFilter(t *testing.T) {
 	p2 := NewPlatform("p2", "Test", nil, []string{"jp"})
 	p2.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
 		fn(h, entry)
-	}, alwaysLookup, usGeoLookup)
+	}, alwaysLookup, usGeoLookup, 3)
 
 	if p2.View().Size() != 0 {
 		t.Fatal("node not in allowed region should not be routable")
@@ -170,7 +172,7 @@ func TestPlatform_EvaluateNode_RegionFilter_NoEgressIP(t *testing.T) {
 
 	p.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
 		fn(h, entry)
-	}, alwaysLookup, usGeoLookup)
+	}, alwaysLookup, usGeoLookup, 3)
 
 	if p.View().Size() != 0 {
 		t.Fatal("node without egress IP should not be routable")
@@ -191,7 +193,7 @@ func TestPlatform_EvaluateNode_RegionFilter_PrefersStoredRegion(t *testing.T) {
 
 	p.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
 		fn(h, entry)
-	}, alwaysLookup, geoLookup)
+	}, alwaysLookup, geoLookup, 3)
 
 	if p.View().Size() != 1 {
 		t.Fatal("stored region should be used before GeoIP fallback")
@@ -209,7 +211,7 @@ func TestPlatform_EvaluateNode_RegionFilter_ExcludeOnlyUnknownRegion(t *testing.
 	geoLookup := func(netip.Addr) string { return "" }
 	p.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
 		fn(h, entry)
-	}, alwaysLookup, geoLookup)
+	}, alwaysLookup, geoLookup, 3)
 
 	if p.View().Size() != 0 {
 		t.Fatal("node with unknown region should not be routable when region filters are configured")
@@ -294,28 +296,28 @@ func TestPlatform_NotifyDirty_AddRemove(t *testing.T) {
 	}
 
 	// Initially empty — add via NotifyDirty.
-	p.NotifyDirty(h, getEntry, alwaysLookup, usGeoLookup)
+	p.NotifyDirty(h, getEntry, alwaysLookup, usGeoLookup, 3)
 	if p.View().Size() != 1 {
 		t.Fatal("NotifyDirty should add passing node")
 	}
 
 	// Circuit-break → NotifyDirty removes.
 	entry.CircuitOpenSince.Store(time.Now().UnixNano())
-	p.NotifyDirty(h, getEntry, alwaysLookup, usGeoLookup)
+	p.NotifyDirty(h, getEntry, alwaysLookup, usGeoLookup, 3)
 	if p.View().Size() != 0 {
 		t.Fatal("NotifyDirty should remove circuit-broken node")
 	}
 
 	// Recover → NotifyDirty re-adds.
 	entry.CircuitOpenSince.Store(0)
-	p.NotifyDirty(h, getEntry, alwaysLookup, usGeoLookup)
+	p.NotifyDirty(h, getEntry, alwaysLookup, usGeoLookup, 3)
 	if p.View().Size() != 1 {
 		t.Fatal("NotifyDirty should re-add recovered node")
 	}
 
 	// Delete from pool → NotifyDirty removes.
 	delete(entryStore, h)
-	p.NotifyDirty(h, getEntry, alwaysLookup, usGeoLookup)
+	p.NotifyDirty(h, getEntry, alwaysLookup, usGeoLookup, 3)
 	if p.View().Size() != 0 {
 		t.Fatal("NotifyDirty should remove deleted node")
 	}
@@ -332,7 +334,7 @@ func TestPlatform_FullRebuild_ClearsOld(t *testing.T) {
 	p.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
 		fn(h1, e1)
 		fn(h2, e2)
-	}, alwaysLookup, usGeoLookup)
+	}, alwaysLookup, usGeoLookup, 3)
 
 	if p.View().Size() != 2 {
 		t.Fatalf("expected 2, got %d", p.View().Size())
@@ -341,7 +343,7 @@ func TestPlatform_FullRebuild_ClearsOld(t *testing.T) {
 	// Second rebuild with only 1 node — old entries cleared.
 	p.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
 		fn(h1, e1)
-	}, alwaysLookup, usGeoLookup)
+	}, alwaysLookup, usGeoLookup, 3)
 
 	if p.View().Size() != 1 {
 		t.Fatalf("expected 1 after rebuild, got %d", p.View().Size())

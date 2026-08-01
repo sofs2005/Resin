@@ -598,6 +598,8 @@ type NodeSummary struct {
 	LastError                        string    `json:"last_error,omitempty"`
 	CircuitOpenSince                 *string   `json:"circuit_open_since"`
 	FailureCount                     int       `json:"failure_count"`
+	SuccessCount                     int       `json:"success_count"`
+	HealthStatus                     string    `json:"health_status"`
 	EgressIP                         string    `json:"egress_ip,omitempty"`
 	Region                           string    `json:"region,omitempty"`
 	LastEgressUpdate                 string    `json:"last_egress_update,omitempty"`
@@ -609,9 +611,18 @@ type NodeSummary struct {
 }
 
 // IsHealthyAndEnabled follows the node-summary health rule used by API/UI
-// aggregates: enabled, outbound-ready, and not circuit-open.
+// aggregates: enabled and classified as stable-healthy.
 func (n NodeSummary) IsHealthyAndEnabled() bool {
-	return n.Enabled && n.HasOutbound && n.CircuitOpenSince == nil
+	return n.Enabled && n.HealthStatus == string(node.HealthStatusHealthy)
+}
+
+// IsAvailableAndEnabled reports enabled nodes that are usable (healthy or available).
+func (n NodeSummary) IsAvailableAndEnabled() bool {
+	if !n.Enabled {
+		return false
+	}
+	return n.HealthStatus == string(node.HealthStatusHealthy) ||
+		n.HealthStatus == string(node.HealthStatusAvailable)
 }
 
 type NodeTag struct {
@@ -622,13 +633,23 @@ type NodeTag struct {
 }
 
 func (s *ControlPlaneService) nodeEntryToSummary(h node.Hash, entry *node.NodeEntry) NodeSummary {
+	minSuccesses := 3
+	if s != nil && s.Pool != nil {
+		minSuccesses = s.Pool.CurrentMinConsecutiveSuccesses()
+	} else if s != nil && s.RuntimeCfg != nil {
+		if cfg := s.RuntimeCfg.Load(); cfg != nil && cfg.MinConsecutiveSuccesses >= 1 {
+			minSuccesses = cfg.MinConsecutiveSuccesses
+		}
+	}
 	ns := NodeSummary{
-		NodeHash:     h.Hex(),
-		CreatedAt:    entry.CreatedAt.UTC().Format(time.RFC3339Nano),
-		Enabled:      true,
-		HasOutbound:  entry.HasOutbound(),
-		LastError:    entry.GetLastError(),
-		FailureCount: int(entry.FailureCount.Load()),
+		NodeHash:      h.Hex(),
+		CreatedAt:     entry.CreatedAt.UTC().Format(time.RFC3339Nano),
+		Enabled:       true,
+		HasOutbound:   entry.HasOutbound(),
+		LastError:     entry.GetLastError(),
+		FailureCount:  int(entry.FailureCount.Load()),
+		SuccessCount:  int(entry.SuccessCount.Load()),
+		HealthStatus:  string(entry.ResolveHealthStatus(minSuccesses)),
 	}
 
 	if s != nil && s.Pool != nil {

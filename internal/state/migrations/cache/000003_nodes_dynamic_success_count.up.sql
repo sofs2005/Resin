@@ -1,0 +1,1 @@
+ALTER TABLE nodes_dynamic ADD COLUMN success_count INTEGER NOT NULL DEFAULT 0;

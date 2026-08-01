@@ -501,3 +501,63 @@ func TestUpdateNodeEgressIP_LocStateMachine(t *testing.T) {
 		t.Fatalf("egress IP should update on ip change: got %v, want %v", got, ip2)
 	}
 }
+
+
+func TestRecordResult_ConsecutiveSuccessesForHealthy(t *testing.T) {
+	pool, subMgr := newHealthTestPool(3)
+	// Override min successes via new pool with custom config.
+	sub := subMgr.Lookup("s1")
+	_ = sub
+
+	subMgr2 := NewSubscriptionManager()
+	sub2 := subscription.NewSubscription("s1", "TestSub", "url", true, false)
+	subMgr2.Register(sub2)
+	pool = NewGlobalNodePool(PoolConfig{
+		SubLookup:               subMgr2.Lookup,
+		GeoLookup:               func(addr netip.Addr) string { return "us" },
+		MaxLatencyTableEntries:  16,
+		MaxConsecutiveFailures:  func() int { return 3 },
+		MinConsecutiveSuccesses: func() int { return 3 },
+	})
+	h := addTestNode(pool, sub2, `{"type":"ss","n":"healthy-streak"}`)
+	entry, _ := pool.GetEntry(h)
+	ob := testutil.NewNoopOutbound()
+	entry.Outbound.Store(&ob)
+
+	// New node is circuit-open / unhealthy.
+	if entry.IsAvailable() || entry.IsHealthy(3) {
+		t.Fatal("new node should start unavailable")
+	}
+
+	pool.RecordResult(h, true)
+	if !entry.IsAvailable() {
+		t.Fatal("first success should make node available")
+	}
+	if entry.IsHealthy(3) {
+		t.Fatal("first success should not make node healthy when min=3")
+	}
+	if entry.SuccessCount.Load() != 1 {
+		t.Fatalf("SuccessCount=%d want 1", entry.SuccessCount.Load())
+	}
+
+	pool.RecordResult(h, true)
+	pool.RecordResult(h, true)
+	if !entry.IsHealthy(3) {
+		t.Fatal("three consecutive successes should make node healthy")
+	}
+	if entry.SuccessCount.Load() != 3 {
+		t.Fatalf("SuccessCount=%d want 3", entry.SuccessCount.Load())
+	}
+
+	// One failure demotes immediately.
+	pool.RecordResult(h, false)
+	if entry.IsHealthy(3) {
+		t.Fatal("one failure should demote healthy node")
+	}
+	if !entry.IsAvailable() {
+		t.Fatal("single failure should keep node available before failure threshold")
+	}
+	if entry.SuccessCount.Load() != 0 {
+		t.Fatalf("SuccessCount=%d want 0 after failure", entry.SuccessCount.Load())
+	}
+}

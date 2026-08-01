@@ -22,6 +22,7 @@ type RuntimeConfigForm = {
   reverse_proxy_log_resp_headers_max_bytes: string;
   reverse_proxy_log_resp_body_max_bytes: string;
   max_consecutive_failures: string;
+  min_consecutive_successes: string;
   max_latency_test_interval: string;
   max_authority_latency_test_interval: string;
   max_egress_test_interval: string;
@@ -41,6 +42,7 @@ const EDITABLE_FIELDS: Array<keyof RuntimeConfig> = [
   "reverse_proxy_log_resp_headers_max_bytes",
   "reverse_proxy_log_resp_body_max_bytes",
   "max_consecutive_failures",
+  "min_consecutive_successes",
   "max_latency_test_interval",
   "max_authority_latency_test_interval",
   "max_egress_test_interval",
@@ -60,6 +62,7 @@ const FIELD_LABELS: Record<keyof RuntimeConfig, string> = {
   reverse_proxy_log_resp_headers_max_bytes: "响应头最大字节数",
   reverse_proxy_log_resp_body_max_bytes: "响应体最大字节数",
   max_consecutive_failures: "最大连续失败次数",
+  min_consecutive_successes: "健康所需连续成功次数",
   max_latency_test_interval: "节点延迟最大测试间隔",
   max_authority_latency_test_interval: "权威域名最大测试间隔",
   max_egress_test_interval: "出口 IP 更新检查间隔",
@@ -97,6 +100,7 @@ function configToForm(config: RuntimeConfig): RuntimeConfigForm {
     reverse_proxy_log_resp_headers_max_bytes: String(config.reverse_proxy_log_resp_headers_max_bytes),
     reverse_proxy_log_resp_body_max_bytes: String(config.reverse_proxy_log_resp_body_max_bytes),
     max_consecutive_failures: String(config.max_consecutive_failures),
+    min_consecutive_successes: String(config.min_consecutive_successes),
     max_latency_test_interval: config.max_latency_test_interval,
     max_authority_latency_test_interval: config.max_authority_latency_test_interval,
     max_egress_test_interval: config.max_egress_test_interval,
@@ -121,6 +125,14 @@ function parseNonNegativeInt(field: string, raw: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 0) {
     throw new Error(i18next.t("{{field}} 必须是非负整数", { field: requiredFieldLabel(field) }));
+  }
+  return parsed;
+}
+
+function parsePositiveInt(field: string, raw: string): number {
+  const parsed = parseNonNegativeInt(field, raw);
+  if (parsed < 1) {
+    throw new Error(i18next.t("{{field}} 必须是正整数", { field: requiredFieldLabel(field) }));
   }
   return parsed;
 }
@@ -168,6 +180,7 @@ function parseForm(form: RuntimeConfigForm): RuntimeConfig {
       form.reverse_proxy_log_resp_body_max_bytes,
     ),
     max_consecutive_failures: parseNonNegativeInt("最大连续失败次数", form.max_consecutive_failures),
+    min_consecutive_successes: parsePositiveInt("健康所需连续成功次数", form.min_consecutive_successes),
     max_latency_test_interval: parseDurationField("节点延迟最大测试间隔", form.max_latency_test_interval),
     max_authority_latency_test_interval: parseDurationField(
       "权威域名最大测试间隔",

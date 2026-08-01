@@ -613,6 +613,7 @@ func TestPool_MakeHealthyAndEnabledEvaluator_ExcludesDisabledNodes(t *testing.T)
 	}
 	healthyOutbound := testutil.NewNoopOutbound()
 	healthyEntry.Outbound.Store(&healthyOutbound)
+	healthyEntry.SuccessCount.Store(3)
 	pool.RecordResult(healthyHash, true)
 
 	disabledRaw := json.RawMessage(`{"type":"ss","server":"2.2.2.2"}`)

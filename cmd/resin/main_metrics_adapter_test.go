@@ -26,6 +26,7 @@ func TestNodePoolStatsAdapter_HealthyNodesRequiresOutbound(t *testing.T) {
 	enabledSub.ManagedNodes().StoreNode(healthyHash, subscription.ManagedNode{Tags: []string{"healthy"}})
 	healthyOb := testutil.NewNoopOutbound()
 	healthy.Outbound.Store(&healthyOb)
+	healthy.SuccessCount.Store(3)
 	healthy.SetEgressIP(netip.MustParseAddr("203.0.113.10"))
 	pool.LoadNodeFromBootstrap(healthy)
 

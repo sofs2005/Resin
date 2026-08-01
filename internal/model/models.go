@@ -68,6 +68,7 @@ type NodeStatic struct {
 type NodeDynamic struct {
 	Hash                               string `json:"hash"`
 	FailureCount                       int    `json:"failure_count"`
+	SuccessCount                       int    `json:"success_count"`
 	CircuitOpenSince                   int64  `json:"circuit_open_since"`
 	EgressIP                           string `json:"egress_ip"`
 	EgressRegion                       string `json:"egress_region"`

@@ -46,8 +46,9 @@ type GlobalNodePool struct {
 	onNodeLatencyChanged func(hash node.Hash, domain string) // fired on latency upserts and evictions
 
 	// Health config
-	maxLatencyTableEntries int
-	maxConsecutiveFailures func() int
+	maxLatencyTableEntries  int
+	maxConsecutiveFailures  func() int
+	minConsecutiveSuccesses func() int
 	latencyDecayWindow     func() time.Duration
 	latencyAuthorities     func() []string
 }
@@ -61,10 +62,11 @@ type PoolConfig struct {
 	OnSubNodeChanged       func(subID string, hash node.Hash, added bool)
 	OnNodeDynamicChanged   func(hash node.Hash)
 	OnNodeLatencyChanged   func(hash node.Hash, domain string)
-	MaxLatencyTableEntries int
-	MaxConsecutiveFailures func() int
-	LatencyDecayWindow     func() time.Duration
-	LatencyAuthorities     func() []string
+	MaxLatencyTableEntries  int
+	MaxConsecutiveFailures  func() int
+	MinConsecutiveSuccesses func() int
+	LatencyDecayWindow      func() time.Duration
+	LatencyAuthorities      func() []string
 }
 
 var (
@@ -80,6 +82,11 @@ func NewGlobalNodePool(cfg PoolConfig) *GlobalNodePool {
 	if maxConsecutiveFailuresFn == nil {
 		panic("topology: NewGlobalNodePool requires non-nil MaxConsecutiveFailures")
 	}
+	minConsecutiveSuccessesFn := cfg.MinConsecutiveSuccesses
+	if minConsecutiveSuccessesFn == nil {
+		// Default matches config.NewDefaultRuntimeConfig().MinConsecutiveSuccesses.
+		minConsecutiveSuccessesFn = func() int { return 3 }
+	}
 
 	return &GlobalNodePool{
 		nodes:                  xsync.NewMap[node.Hash, *node.NodeEntry](),
@@ -91,7 +98,8 @@ func NewGlobalNodePool(cfg PoolConfig) *GlobalNodePool {
 		onNodeDynamicChanged:   cfg.OnNodeDynamicChanged,
 		onNodeLatencyChanged:   cfg.OnNodeLatencyChanged,
 		maxLatencyTableEntries: cfg.MaxLatencyTableEntries,
-		maxConsecutiveFailures: maxConsecutiveFailuresFn,
+		maxConsecutiveFailures:  maxConsecutiveFailuresFn,
+		minConsecutiveSuccesses: minConsecutiveSuccessesFn,
 		latencyDecayWindow:     cfg.LatencyDecayWindow,
 		latencyAuthorities:     cfg.LatencyAuthorities,
 		platformByID:           make(map[string]*platform.Platform),
@@ -403,14 +411,26 @@ func (p *GlobalNodePool) IsNodeDisabled(hash node.Hash) bool {
 
 // MakeHealthyAndEnabledEvaluator builds a predicate for pool-context health
 // aggregates: the node must not be disabled by subscription state and must
-// satisfy the entry-local health checks.
+// satisfy the entry-local stable-healthy checks (consecutive successes).
 func (p *GlobalNodePool) MakeHealthyAndEnabledEvaluator() func(entry *node.NodeEntry) bool {
 	subLookup := p.MakeSubLookup()
 	return func(entry *node.NodeEntry) bool {
 		if entry == nil || entry.IsDisabledBySubscriptions(subLookup) {
 			return false
 		}
-		return entry.IsHealthy()
+		return entry.IsHealthy(p.currentMinConsecutiveSuccesses())
+	}
+}
+
+// MakeAvailableAndEnabledEvaluator builds a predicate for nodes that are
+// enabled and available (circuit closed + outbound), including unproven nodes.
+func (p *GlobalNodePool) MakeAvailableAndEnabledEvaluator() func(entry *node.NodeEntry) bool {
+	subLookup := p.MakeSubLookup()
+	return func(entry *node.NodeEntry) bool {
+		if entry == nil || entry.IsDisabledBySubscriptions(subLookup) {
+			return false
+		}
+		return entry.IsAvailable()
 	}
 }
 
@@ -442,7 +462,7 @@ func (p *GlobalNodePool) notifyAllPlatformsDirty(hash node.Hash) {
 		go func(plat *platform.Platform) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			plat.NotifyDirty(hash, getEntry, subLookup, p.geoLookup)
+			plat.NotifyDirty(hash, getEntry, subLookup, p.geoLookup, p.currentMinConsecutiveSuccesses())
 		}(plat)
 	}
 	wg.Wait()
@@ -476,7 +496,7 @@ func (p *GlobalNodePool) RebuildAllPlatforms() {
 		go func(plat *platform.Platform) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			plat.FullRebuild(poolRange, subLookup, p.geoLookup)
+			plat.FullRebuild(poolRange, subLookup, p.geoLookup, p.currentMinConsecutiveSuccesses())
 		}(plat)
 	}
 	wg.Wait()
@@ -488,7 +508,7 @@ func (p *GlobalNodePool) RebuildPlatform(plat *platform.Platform) {
 	poolRange := func(fn func(node.Hash, *node.NodeEntry) bool) {
 		p.nodes.Range(fn)
 	}
-	plat.FullRebuild(poolRange, subLookup, p.geoLookup)
+	plat.FullRebuild(poolRange, subLookup, p.geoLookup, p.currentMinConsecutiveSuccesses())
 }
 
 // --- Health Management ---
@@ -518,9 +538,11 @@ func (p *GlobalNodePool) RangeNodes(fn func(node.Hash, *node.NodeEntry) bool) {
 }
 
 // RecordResult records a probe or passive health-check result.
-// On success, resets FailureCount and clears circuit-breaker.
-// On failure, increments FailureCount and opens circuit-breaker if threshold is reached.
-// Notifies platforms only when circuit state changes (open/recover).
+// On success, resets FailureCount, clears circuit-breaker, and increments
+// SuccessCount. A node becomes healthy only after min_consecutive_successes.
+// On failure, clears SuccessCount (immediate demotion from healthy to available),
+// increments FailureCount, and opens circuit-breaker if failure threshold reached.
+// Notifies platforms when circuit state or healthy-tier membership may change.
 // Fires OnNodeDynamicChanged only when dynamic fields actually change.
 func (p *GlobalNodePool) RecordResult(hash node.Hash, success bool) {
 	entry, ok := p.nodes.Load(hash)
@@ -529,7 +551,9 @@ func (p *GlobalNodePool) RecordResult(hash node.Hash, success bool) {
 	}
 
 	dynamicChanged := false
-	circuitStateChanged := false
+	viewStateChanged := false
+	minSuccesses := p.currentMinConsecutiveSuccesses()
+	wasHealthy := entry.IsHealthy(minSuccesses)
 
 	if success {
 		if entry.FailureCount.Swap(0) != 0 {
@@ -537,21 +561,35 @@ func (p *GlobalNodePool) RecordResult(hash node.Hash, success bool) {
 		}
 		if entry.CircuitOpenSince.Swap(0) != 0 {
 			dynamicChanged = true
-			circuitStateChanged = true
+			viewStateChanged = true
+		}
+		newSuccess := entry.SuccessCount.Add(1)
+		dynamicChanged = true
+		// Crossing into healthy needs healthy-set refresh.
+		if int(newSuccess) == minSuccesses {
+			viewStateChanged = true
 		}
 	} else {
+		oldSuccess := entry.SuccessCount.Swap(0)
+		if oldSuccess != 0 {
+			dynamicChanged = true
+		}
+		// Immediate demotion from healthy to available.
+		if wasHealthy {
+			viewStateChanged = true
+		}
 		newCount := entry.FailureCount.Add(1)
 		dynamicChanged = true
 		maxConsecutiveFailures := p.currentMaxConsecutiveFailures()
 		if maxConsecutiveFailures > 0 && int(newCount) >= maxConsecutiveFailures {
 			// Open circuit if not already open.
 			if entry.CircuitOpenSince.CompareAndSwap(0, time.Now().UnixNano()) {
-				circuitStateChanged = true
+				viewStateChanged = true
 			}
 		}
 	}
 
-	if circuitStateChanged {
+	if viewStateChanged {
 		p.notifyAllPlatformsDirty(hash)
 	}
 	if dynamicChanged && p.onNodeDynamicChanged != nil {
@@ -585,6 +623,19 @@ func (p *GlobalNodePool) passiveCircuitBreakerDisabled(platformID string) bool {
 
 func (p *GlobalNodePool) currentMaxConsecutiveFailures() int {
 	return p.maxConsecutiveFailures()
+}
+
+func (p *GlobalNodePool) currentMinConsecutiveSuccesses() int {
+	min := p.minConsecutiveSuccesses()
+	if min < 1 {
+		return 1
+	}
+	return min
+}
+
+// CurrentMinConsecutiveSuccesses exposes the live healthy-success threshold.
+func (p *GlobalNodePool) CurrentMinConsecutiveSuccesses() int {
+	return p.currentMinConsecutiveSuccesses()
 }
 
 // RecordLatency records a latency probe attempt for the given node and raw target.

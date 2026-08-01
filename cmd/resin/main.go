@@ -85,8 +85,20 @@ func loadRuntimeConfig(engine *state.StateEngine) *config.RuntimeConfig {
 		log.Println("No persisted runtime config found, using defaults")
 		return config.NewDefaultRuntimeConfig()
 	}
+	normalizeRuntimeConfig(runtimeCfg)
 	log.Printf("Loaded persisted runtime config (version %d)", ver)
 	return runtimeCfg
+}
+
+// normalizeRuntimeConfig fills backward-compatible defaults for fields added
+// after older persisted configs were written.
+func normalizeRuntimeConfig(cfg *config.RuntimeConfig) {
+	if cfg == nil {
+		return
+	}
+	if cfg.MinConsecutiveSuccesses < 1 {
+		cfg.MinConsecutiveSuccesses = config.NewDefaultRuntimeConfig().MinConsecutiveSuccesses
+	}
 }
 
 func newDirectDownloader(
@@ -229,6 +241,9 @@ func newTopologyRuntime(
 		MaxLatencyTableEntries: envCfg.MaxLatencyTableEntries,
 		MaxConsecutiveFailures: func() int {
 			return runtimeConfigSnapshot(runtimeCfg).MaxConsecutiveFailures
+		},
+		MinConsecutiveSuccesses: func() int {
+			return runtimeConfigSnapshot(runtimeCfg).MinConsecutiveSuccesses
 		},
 		LatencyDecayWindow: func() time.Duration {
 			return time.Duration(runtimeConfigSnapshot(runtimeCfg).LatencyDecayWindow)
@@ -504,6 +519,7 @@ func newFlushReaders(
 			return &model.NodeDynamic{
 				Hash:                               hash,
 				FailureCount:                       int(entry.FailureCount.Load()),
+				SuccessCount:                       int(entry.SuccessCount.Load()),
 				CircuitOpenSince:                   entry.CircuitOpenSince.Load(),
 				EgressIP:                           egressStr,
 				EgressRegion:                       entry.GetEgressRegion(),
@@ -837,6 +853,7 @@ func restoreBootstrapNodeDynamics(
 			continue
 		}
 		entry.FailureCount.Store(int32(nd.FailureCount))
+		entry.SuccessCount.Store(int32(nd.SuccessCount))
 		entry.CircuitOpenSince.Store(nd.CircuitOpenSince)
 		entry.LastLatencyProbeAttempt.Store(nd.LastLatencyProbeAttemptNs)
 		entry.LastAuthorityLatencyProbeAttempt.Store(nd.LastAuthorityLatencyProbeAttemptNs)

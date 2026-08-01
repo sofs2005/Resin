@@ -33,6 +33,9 @@ function normalizeNode(raw: ApiNodeSummary): NodeSummary {
     tags: Array.isArray(raw.tags) ? raw.tags : [],
     last_error: raw.last_error || "",
     circuit_open_since: raw.circuit_open_since || "",
+    failure_count: raw.failure_count ?? 0,
+    success_count: raw.success_count ?? 0,
+    health_status: raw.health_status || "unhealthy",
     egress_ip: raw.egress_ip || "",
     region: raw.region || "",
     last_egress_update: raw.last_egress_update || "",
@@ -83,6 +86,9 @@ export async function listNodes(filters: NodeListQuery): Promise<PageResponse<No
   }
   if (filters.enabled !== undefined) {
     query.set("enabled", String(filters.enabled));
+  }
+  if (filters.health_status) {
+    query.set("health_status", filters.health_status);
   }
 
   const data = await apiRequest<PageResponse<ApiNodeSummary>>(`${basePath}?${query.toString()}`);

@@ -176,6 +176,17 @@ func HandleListNodes(cp *service.ControlPlaneService) http.HandlerFunc {
 		}
 		filters.Enabled = enabled
 
+		if v := strings.TrimSpace(q.Get("health_status")); v != "" {
+			switch strings.ToLower(v) {
+			case "healthy", "available", "unhealthy":
+				lower := strings.ToLower(v)
+				filters.HealthStatus = &lower
+			default:
+				writeInvalidArgument(w, "health_status: must be healthy, available, or unhealthy")
+				return
+			}
+		}
+
 		if v := q.Get("probed_since"); v != "" {
 			t, err := time.Parse(time.RFC3339Nano, v)
 			if err != nil {

@@ -80,6 +80,7 @@ var runtimeConfigAllowedFields = map[string]bool{
 	"reverse_proxy_log_resp_headers_max_bytes": true,
 	"reverse_proxy_log_resp_body_max_bytes":    true,
 	"max_consecutive_failures":                 true,
+	"min_consecutive_successes":                true,
 	"max_latency_test_interval":                true,
 	"max_authority_latency_test_interval":      true,
 	"max_egress_test_interval":                 true,
@@ -157,7 +158,8 @@ func (s *ControlPlaneService) PatchRuntimeConfig(patchJSON json.RawMessage) (*co
 	defer s.configMu.Unlock()
 
 	// 3. Deep-copy current config → apply patch.
-	newCfg := copyRuntimeConfig(s.RuntimeCfg.Load())
+	oldCfg := copyRuntimeConfig(s.RuntimeCfg.Load())
+	newCfg := copyRuntimeConfig(oldCfg)
 	if verr := parseRuntimeConfigPatch(patchJSON, newCfg); verr != nil {
 		return nil, verr
 	}
@@ -166,6 +168,7 @@ func (s *ControlPlaneService) PatchRuntimeConfig(patchJSON json.RawMessage) (*co
 	if err := validateRuntimeConfig(newCfg); err != nil {
 		return nil, err
 	}
+	minSuccessesChanged := oldCfg.MinConsecutiveSuccesses != newCfg.MinConsecutiveSuccesses
 
 	// On process start, initialize local configVersion from persisted state
 	// so PATCH keeps monotonically increasing versions across restarts.
@@ -189,6 +192,12 @@ func (s *ControlPlaneService) PatchRuntimeConfig(patchJSON json.RawMessage) (*co
 	s.RuntimeCfg.Store(newCfg)
 	s.configVersion = newVersion
 
+	// Healthy-tier membership depends on min_consecutive_successes; rebuild
+	// platform views when the threshold changes so prefer-healthy routing updates.
+	if minSuccessesChanged && s.Pool != nil {
+		s.Pool.RebuildAllPlatforms()
+	}
+
 	return newCfg, nil
 }
 
@@ -201,6 +210,9 @@ func validateRuntimeConfig(cfg *config.RuntimeConfig) *ServiceError {
 	latencyDomain := strings.ToLower(netutil.ExtractDomain(u.Host))
 	if cfg.MaxConsecutiveFailures < 0 {
 		return invalidArg("max_consecutive_failures: must be non-negative")
+	}
+	if cfg.MinConsecutiveSuccesses < 1 {
+		return invalidArg("min_consecutive_successes: must be >= 1")
 	}
 	if cfg.CacheFlushDirtyThreshold < 0 {
 		return invalidArg("cache_flush_dirty_threshold: must be non-negative")

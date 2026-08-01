@@ -66,19 +66,20 @@ func (p *Platform) View() ReadOnlyView {
 
 // FullRebuild clears the routable view and re-evaluates all nodes from the pool.
 // Acquires viewMu — any concurrent NotifyDirty calls block until rebuild completes.
+// minConsecutiveSuccesses controls which routable nodes are also marked healthy.
 func (p *Platform) FullRebuild(
 	poolRange PoolRangeFunc,
 	subLookup node.SubLookupFunc,
 	geoLookup GeoLookupFunc,
+	minConsecutiveSuccesses int,
 ) {
 	p.viewMu.Lock()
 	defer p.viewMu.Unlock()
 
 	p.view.Clear()
 	poolRange(func(h node.Hash, entry *node.NodeEntry) bool {
-		if p.evaluateNode(entry, subLookup, geoLookup) {
-			p.view.Add(h)
-		}
+		routable, healthy := p.evaluateNode(entry, subLookup, geoLookup, minConsecutiveSuccesses)
+		p.view.SetMembership(h, routable, healthy)
 		return true
 	})
 }
@@ -90,6 +91,7 @@ func (p *Platform) NotifyDirty(
 	getEntry GetEntryFunc,
 	subLookup node.SubLookupFunc,
 	geoLookup GeoLookupFunc,
+	minConsecutiveSuccesses int,
 ) {
 	p.viewMu.Lock()
 	defer p.viewMu.Unlock()
@@ -101,54 +103,54 @@ func (p *Platform) NotifyDirty(
 		return
 	}
 
-	if p.evaluateNode(entry, subLookup, geoLookup) {
-		p.view.Add(h)
-	} else {
-		p.view.Remove(h)
-	}
+	routable, healthy := p.evaluateNode(entry, subLookup, geoLookup, minConsecutiveSuccesses)
+	p.view.SetMembership(h, routable, healthy)
 }
 
 // evaluateNode checks all filter conditions for platform routability.
+// Returns (routable, healthy): healthy implies routable.
 func (p *Platform) evaluateNode(
 	entry *node.NodeEntry,
 	subLookup node.SubLookupFunc,
 	geoLookup GeoLookupFunc,
-) bool {
+	minConsecutiveSuccesses int,
+) (routable bool, healthy bool) {
 	// 0. Disabled nodes are never routable.
 	if entry.IsDisabledBySubscriptions(subLookup) {
-		return false
+		return false, false
 	}
 
-	// 1. Healthy for routing (outbound ready + circuit not open).
-	if !entry.IsHealthy() {
-		return false
+	// 1. Available for routing (outbound ready + circuit not open).
+	// Unproven nodes (available but not yet healthy) remain routable as fallback.
+	if !entry.IsAvailable() {
+		return false, false
 	}
 
 	// 2. Tag regex match.
 	if !entry.MatchRegexs(p.RegexFilters, subLookup) {
-		return false
+		return false, false
 	}
 
 	// 3. Egress IP must be known.
 	egressIP := entry.GetEgressIP()
 	if !egressIP.IsValid() {
-		return false
+		return false, false
 	}
 
 	// 4. Region filter (when configured).
 	if len(p.RegionFilters) > 0 {
 		region := entry.GetRegion(geoLookup)
 		if !MatchRegionFilter(region, p.RegionFilters) {
-			return false
+			return false, false
 		}
 	}
 
 	// 5. Has at least one latency record.
 	if !entry.HasLatency() {
-		return false
+		return false, false
 	}
 
-	return true
+	return true, entry.IsHealthy(minConsecutiveSuccesses)
 }
 
 // MatchRegionFilter applies include/exclude region filters.

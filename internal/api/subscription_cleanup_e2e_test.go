@@ -62,6 +62,7 @@ func TestAPIContract_SubscriptionCleanupAction_E2E(t *testing.T) {
 	outbound := testutil.NewNoopOutbound()
 	healthyEntry.Outbound.Store(&outbound)
 	healthyEntry.CircuitOpenSince.Store(0)
+	healthyEntry.SuccessCount.Store(3)
 
 	beforeCleanupSubRec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/subscriptions/"+subID, nil, true)
 	if beforeCleanupSubRec.Code != http.StatusOK {

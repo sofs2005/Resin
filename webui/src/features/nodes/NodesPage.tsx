@@ -23,8 +23,8 @@ import type { NodeSummary } from "./types";
 import { getAllRegions, getRegionName } from "./regions";
 import type { NodeListFilters, NodeSortBy, SortOrder } from "./types";
 
-type NodeStatusFilter = "all" | "healthy" | "circuit_open" | "error" | "disabled";
-type NodeDisplayStatus = "healthy" | "circuit_open" | "pending_test" | "error" | "disabled";
+type NodeStatusFilter = "all" | "healthy" | "available" | "circuit_open" | "error" | "disabled";
+type NodeDisplayStatus = "healthy" | "available" | "circuit_open" | "pending_test" | "error" | "disabled";
 type ProbeAction = "egress" | "latency";
 
 type NodeFilterDraft = {
@@ -84,7 +84,7 @@ function parseStatusParam(value: string | null): NodeStatusFilter | undefined {
   }
 
   const normalized = value.trim().toLowerCase();
-  if (normalized === "all" || normalized === "healthy" || normalized === "circuit_open" || normalized === "error" || normalized === "disabled") {
+  if (normalized === "all" || normalized === "healthy" || normalized === "available" || normalized === "circuit_open" || normalized === "error" || normalized === "disabled") {
     return normalized;
   }
 
@@ -143,11 +143,15 @@ function draftToActiveFilters(draft: NodeFilterDraft): NodeListFilters {
   let has_outbound: boolean | undefined = undefined;
   let enabled: boolean | undefined = undefined;
 
+  let health_status: NodeListFilters["health_status"] = undefined;
   switch (draft.status) {
     case "healthy":
       enabled = true;
-      has_outbound = true;
-      circuit_open = false;
+      health_status = "healthy";
+      break;
+    case "available":
+      enabled = true;
+      health_status = "available";
       break;
     case "circuit_open":
       enabled = true;
@@ -175,6 +179,7 @@ function draftToActiveFilters(draft: NodeFilterDraft): NodeListFilters {
     enabled,
     circuit_open,
     has_outbound,
+    health_status,
   };
 }
 
@@ -206,8 +211,11 @@ function getNodeDisplayStatus(node: NodeSummary): NodeDisplayStatus {
   if (isPendingTestNode(node)) {
     return "pending_test";
   }
-  if (node.circuit_open_since) {
+  if (node.circuit_open_since || node.health_status === "unhealthy") {
     return "circuit_open";
+  }
+  if (node.health_status === "available") {
+    return "available";
   }
   return "healthy";
 }
@@ -226,7 +234,8 @@ function referenceLatencyColor(latencyMs: number): string {
 }
 
 function displayableReferenceLatencyMs(node: NodeSummary): number | null {
-  if (getNodeDisplayStatus(node) !== "healthy") {
+  const status = getNodeDisplayStatus(node);
+  if (status !== "healthy" && status !== "available") {
     return null;
   }
   if (!hasReferenceLatency(node)) {
@@ -620,6 +629,7 @@ export function NodesPage() {
         if (status === "error") return <Badge variant="danger">{t("错误")}</Badge>;
         if (status === "pending_test") return <Badge variant="muted">{t("待测")}</Badge>;
         if (status === "circuit_open") return <Badge variant="warning">{t("熔断")}</Badge>;
+        if (status === "available") return <Badge variant="warning">{t("可用")}</Badge>;
         return <Badge variant="success">{t("健康")}</Badge>;
       },
     }),
@@ -798,6 +808,7 @@ export function NodesPage() {
               >
                 <option value="all">{t("全部")}</option>
                 <option value="healthy">{t("健康")}</option>
+                <option value="available">{t("可用")}</option>
                 <option value="circuit_open">{t("熔断 / 待测")}</option>
                 <option value="error">{t("错误")}</option>
                 <option value="disabled">{t("禁用")}</option>
@@ -912,6 +923,8 @@ export function NodesPage() {
                               <Badge variant="muted">{t("待测")}</Badge>
                             ) : status === "circuit_open" ? (
                               <Badge variant="warning">{t("熔断")}</Badge>
+                            ) : status === "available" ? (
+                              <Badge variant="warning">{t("可用")}</Badge>
                             ) : (
                               <Badge variant="success">{t("健康")}</Badge>
                             )}

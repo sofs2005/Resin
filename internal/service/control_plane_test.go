@@ -639,6 +639,7 @@ func TestGetSubscription_NodeCountExcludesEvictedManagedNodes(t *testing.T) {
 	}
 	activeOutbound := testutil.NewNoopOutbound()
 	activeEntry.Outbound.Store(&activeOutbound)
+	activeEntry.SuccessCount.Store(3)
 	pool.RecordResult(activeHash, true)
 
 	// Shared node is marked evicted in subA but still healthy in pool via subB.
@@ -654,6 +655,7 @@ func TestGetSubscription_NodeCountExcludesEvictedManagedNodes(t *testing.T) {
 	}
 	sharedOutbound := testutil.NewNoopOutbound()
 	sharedEntry.Outbound.Store(&sharedOutbound)
+	sharedEntry.SuccessCount.Store(3)
 	pool.RecordResult(sharedHash, true)
 
 	evictedNode, ok := subA.ManagedNodes().LoadNode(sharedHash)
@@ -704,6 +706,7 @@ func TestGetSubscription_HealthyNodeCount_ExcludesDisabledSubscriptionNodes(t *t
 	}
 	outbound := testutil.NewNoopOutbound()
 	entry.Outbound.Store(&outbound)
+	entry.SuccessCount.Store(3)
 	pool.RecordResult(hash, true)
 
 	cp := &ControlPlaneService{

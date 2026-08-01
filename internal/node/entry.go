@@ -31,7 +31,11 @@ type NodeEntry struct {
 	LastError       string
 
 	// Atomic dynamic fields for concurrent hot-path reads.
-	FailureCount     atomic.Int32
+	FailureCount atomic.Int32
+	// SuccessCount is the current streak of consecutive successful health
+	// results. Reset to 0 on any failure. Used with min_consecutive_successes
+	// to distinguish available vs healthy nodes.
+	SuccessCount     atomic.Int32
 	CircuitOpenSince atomic.Int64               // unix-nano; 0 = not open
 	egressIP         atomic.Pointer[netip.Addr] // nil before first store
 	egressRegion     atomic.Pointer[string]     // lowercase country code from probe trace; nil when unknown
@@ -211,13 +215,48 @@ func (e *NodeEntry) HasOutbound() bool {
 	return e.Outbound.Load() != nil
 }
 
-// IsHealthy returns true when the node can be treated as healthy for
-// routing/statistics: outbound is ready and circuit is not open.
-func (e *NodeEntry) IsHealthy() bool {
+// IsAvailable returns true when the node is usable for routing fallback:
+// outbound is ready and circuit is not open. Available nodes may still be
+// unproven (SuccessCount below the healthy threshold).
+func (e *NodeEntry) IsAvailable() bool {
 	if e == nil {
 		return false
 	}
 	return !e.IsCircuitOpen() && e.HasOutbound()
+}
+
+// IsHealthy returns true when the node is stable-healthy for preferred
+// routing/statistics: available, and SuccessCount reaches
+// minConsecutiveSuccesses. Values < 1 are treated as 1.
+func (e *NodeEntry) IsHealthy(minConsecutiveSuccesses int) bool {
+	if !e.IsAvailable() {
+		return false
+	}
+	min := minConsecutiveSuccesses
+	if min < 1 {
+		min = 1
+	}
+	return int(e.SuccessCount.Load()) >= min
+}
+
+// HealthStatus is a coarse node health label for API/UI.
+type HealthStatus string
+
+const (
+	HealthStatusUnhealthy HealthStatus = "unhealthy"
+	HealthStatusAvailable HealthStatus = "available"
+	HealthStatusHealthy   HealthStatus = "healthy"
+)
+
+// ResolveHealthStatus classifies the node given the healthy success threshold.
+func (e *NodeEntry) ResolveHealthStatus(minConsecutiveSuccesses int) HealthStatus {
+	if e == nil || !e.IsAvailable() {
+		return HealthStatusUnhealthy
+	}
+	if e.IsHealthy(minConsecutiveSuccesses) {
+		return HealthStatusHealthy
+	}
+	return HealthStatusAvailable
 }
 
 // GetEgressIP returns the node's egress IP, or the zero Addr if unknown.
