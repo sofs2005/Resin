@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:22-alpine AS web-builder
+# Frontend is pure static output — always build on the native builder platform
+# so arm64 multi-arch builds don't run npm under QEMU (often appears "stuck").
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web-builder
 WORKDIR /src/webui
 
 COPY webui/package.json webui/package-lock.json ./
@@ -9,7 +11,8 @@ RUN npm ci
 COPY webui/ ./
 RUN npm run build
 
-FROM golang:1.25-alpine AS go-builder
+# Cross-compile Go on the native builder platform for each TARGETARCH.
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS go-builder
 WORKDIR /src
 
 COPY go.mod go.sum ./
@@ -18,11 +21,14 @@ RUN go mod download
 COPY . ./
 COPY --from=web-builder /src/webui/dist ./webui/dist
 
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 ARG VERSION=dev
 ARG GIT_COMMIT=unknown
 ARG BUILD_TIME=unknown
 
-RUN CGO_ENABLED=0 go build -trimpath -tags "with_quic with_wireguard with_grpc with_utls" \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+  go build -trimpath -tags "with_quic with_wireguard with_grpc with_utls" \
   -ldflags="-s -w \
   -X github.com/Resinat/Resin/internal/buildinfo.Version=${VERSION} \
   -X github.com/Resinat/Resin/internal/buildinfo.GitCommit=${GIT_COMMIT} \

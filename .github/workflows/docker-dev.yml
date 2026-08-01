@@ -73,6 +73,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           provenance: false
+          # Frontend/Go builders run on BUILDPLATFORM; cache still speeds deps.
+          cache-from: type=gha,scope=docker-dev
+          cache-to: type=gha,mode=max,scope=docker-dev
           build-args: |
             VERSION=dev
             GIT_COMMIT=${{ steps.buildmeta.outputs.commit }}
