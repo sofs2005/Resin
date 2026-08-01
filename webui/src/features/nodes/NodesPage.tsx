@@ -42,7 +42,7 @@ const defaultFilterDraft: NodeFilterDraft = {
   tag_keyword: "",
   region: "",
   egress_ip: "",
-  status: "all",
+  status: "healthy",
 };
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200, 500, 1000, 2000, 5000] as const;
@@ -115,7 +115,7 @@ function statusFromQuery(params: URLSearchParams): NodeStatusFilter {
     return "healthy";
   }
 
-  return "all";
+  return "healthy";
 }
 
 function trimQueryValue(params: URLSearchParams, key: string): string {
