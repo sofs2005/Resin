@@ -49,29 +49,26 @@
 ### 设计决策
 系统把路由输入统一为 `(platformID, account, targetDomain)`：  
 注意：外部接口（HTTP 头、反向代理路径）通常使用 Platform Name 作为输入，但在入口处应立即通过 Name -> ID 映射转换为 ID。后续逻辑只认 ID，不认 Name。
-1. 认证解析由 `RESIN_AUTH_VERSION` 强制控制（迁移期双栈，环境变量必填）。
-   * 仅允许 `LEGACY_V0|V1`；缺失或非法值时进程拒绝启动并提示迁移文档。
-   * `LEGACY_V0` 启动时打印兼容模式告警（未来版本会移除）。
+1. 认证解析固定使用 V1。`RESIN_AUTH_VERSION` 可选；未设置或为空时默认使用 V1，非空时仅允许 `V1`。
    * 启动期 fatal/warning 提示需保持清晰可读；在终端支持 ANSI 且未设置 `NO_COLOR` 时，fatal 与 warning 可使用颜色高亮。
-2. `V1` 启动前置校验：
+2. 启动前置校验：
    * `RESIN_PROXY_TOKEN` 非空时不能包含 `.:|/\@?#%~`，且不能包含空格、tab、换行、回车。
-   * 读取数据库中全部 Platform 名称并按 V1 规则校验；若存在历史不合规名称，拒绝启动并提示先以 `LEGACY_V0` 启动后重命名再切回 `V1`。
-3. 统一入站端口：
-   * `RESIN_PORT` 同时承载控制面 API、WebUI、HTTP 正向代理、SOCKS5 正向代理与反向代理。
-   * 数据面在 TCP 层按首字节分流：首字节为 `0x05` 时进入 SOCKS5；其余流量进入 HTTP 入口，再由现有 HTTP 路由区分控制面 API、WebUI、HTTP 正向代理与反向代理。
+   * 读取数据库中全部 Platform 名称并按 V1 规则校验；若存在不合规名称则拒绝启动。
+3. 入站接入点：
+   * `RESIN_PORT` 定义默认接入点。默认接入点同时承载控制面 API、WebUI、HTTP 正向代理、SOCKS5 正向代理与反向代理；它由环境变量生成，只读且不可删除。
+   * 用户可通过控制面增加持久化的自定义接入点。每个接入点定义唯一端口，并分别控制管理页面、代理总开关、HTTP 正向代理、HTTP 反向代理和 SOCKS5；配置增删改即时更新 listener，无需重启。
+   * 所有接入点共享控制面、路由池、节点池、出站 transport pool、日志与指标组件，仅 listener 和入站能力策略彼此独立。
+   * 每个接入点在 TCP 层按首字节分流：首字节为 `0x05` 时进入 SOCKS5；其余流量进入 HTTP 入口，再区分控制面 API、WebUI、HTTP 正向代理与反向代理。
+   * `/healthz` 在所有接入点始终可用；关闭管理页面时，其他控制面 API 与 WebUI 路径返回 404。
+   * 接入点可随时配置“当系统未设定代理令牌时，也强制客户端发送代理认证信息”（默认关闭）。`RESIN_PROXY_TOKEN` 非空时始终执行令牌认证；为空且此选项启用时，HTTP 正向代理缺少可解析且非空的 Basic 用户名会返回 407，SOCKS5 仅接受 `0x02` 并要求用户名和密码均非空，但不校验密码内容。空令牌下，此选项只用于强制携带身份，不构成安全认证。当启用此选项，客户端发来空认证不再视为 Default 平台请求。
 4. HTTP 正向代理：
-   * `V1` 格式：`Proxy-Authorization: Basic Platform.Account:PROXY_TOKEN`（user=Platform.Account，pass=PROXY_TOKEN）；解析时先按最右侧 `:` 切 Token，再对左侧身份串按第一个出现的 `.` 或 `:` 切 `Platform` 与 `Account`。
-   * `LEGACY_V0` 格式：`Proxy-Authorization: Basic PROXY_TOKEN:Platform:Account`（user=PROXY_TOKEN，pass=Platform:Account）；`pass` 按第一个 `:` 切 `Platform` 与 `Account`。
-   * `LEGACY_V0` 模式下禁用 V1 新格式；`V1` 模式下禁用 `PROXY_TOKEN:Platform:Account` 旧格式（`RESIN_PROXY_TOKEN` 为空时仅保留有限兼容解析用于迁移）。
+   * 格式：`Proxy-Authorization: Basic Platform.Account:PROXY_TOKEN`（user=Platform.Account，pass=PROXY_TOKEN）；解析时先按最右侧 `:` 切 Token，再对左侧身份串按第一个出现的 `.` 或 `:` 切 `Platform` 与 `Account`。
 5. SOCKS5 正向代理：
-   * 仅在 `V1` 模式启用；`LEGACY_V0` 下 SOCKS5 方法协商直接返回 `NO ACCEPTABLE METHODS (0xFF)`。
    * 仅支持 SOCKS5 `CONNECT`；成功后进入原始双向 TCP 隧道。
    * `RESIN_PROXY_TOKEN` 非空时，仅接受 RFC1929 用户名密码认证（method `0x02`）：`username=<Platform.Account|Platform:Account>`，`password=<PROXY_TOKEN>`。
    * `RESIN_PROXY_TOKEN` 为空时，允许 `NO AUTH (0x00)`；若客户端同时提供 RFC1929 用户名密码认证，服务端优先选择该方法以提取 `Platform/Account` 身份，此时密码不做校验。
 6. 反向代理：
-   * `V1` 路径：`/PROXY_TOKEN/Platform.Account/protocol/host/path?query`；身份段按第一个出现的 `.` 或 `:` 切分。
-   * `LEGACY_V0` 路径：`/PROXY_TOKEN/Platform:Account/protocol/host/path?query`；身份段按第一个 `:` 切分。
-   * `LEGACY_V0` 模式下禁用 V1 身份段解析策略（例如纯 `Platform` 身份段在 `LEGACY_V0` 直接视为路径解析错误）。
+   * 路径：`/PROXY_TOKEN/Platform.Account/protocol/host/path?query`；身份段按第一个出现的 `.` 或 `:` 切分。
    * URL 身份段（`Platform.Account` / `Platform:Account`）接口定位为“简单使用 / 手动调试”；正式集成推荐通过请求头 `X-Resin-Account` 提供 Account。`X-Resin-Account` 的优先级高于 URL 身份段的 Account。
 7. Platform 名称在创建/更新时先 trim，再校验：非空、全局唯一、不可命中保留字（`Default`/`api`），且不得包含 `.:|/\@?#%~` 与空格、tab、换行、回车。
 8. 当 Platform 未提供，默认使用 Default 平台。当代理的 Account 未提供，默认使用平台内的随机路由。
@@ -158,7 +155,7 @@ URL 不允许包含查询部分与 ? 字符。
 
 ### 反向代理 URL 解析错误
 
-反向代理路径格式为 `/PROXY_TOKEN/<identity>/protocol/host/path?query`（`V1` 使用 `Platform.Account` 或 `Platform:Account`；`LEGACY_V0` 使用 `Platform:Account`）。如果路径解析失败，在认证通过后返回以下错误：
+反向代理路径格式为 `/PROXY_TOKEN/<identity>/protocol/host/path?query`，identity 使用 `Platform.Account` 或 `Platform:Account`。如果路径解析失败，在认证通过后返回以下错误：
 
 | 场景 | HTTP Code | X-Resin-Error | 说明 |
 |------|-----------|---------------|------|
@@ -188,11 +185,11 @@ URL 不允许包含查询部分与 ? 字符。
 
 ### SOCKS5 协议返回
 
-SOCKS5 正向代理仅在 `RESIN_AUTH_VERSION=V1` 时启用，且只支持 SOCKS5 `CONNECT`。它使用标准 SOCKS5 / RFC1929 协议回复，不返回 HTTP 状态码或 `X-Resin-Error`。
+SOCKS5 正向代理只支持 SOCKS5 `CONNECT`。它使用标准 SOCKS5 / RFC1929 协议回复，不返回 HTTP 状态码或 `X-Resin-Error`。
 
 | 场景 | 协议回复 | 说明 |
 |------|----------|------|
-| `LEGACY_V0` 模式或客户端未提供可接受的认证方法 | 方法协商回复 `0x05 0xFF` | 服务端拒绝继续会话。 |
+| 客户端未提供可接受的认证方法 | 方法协商回复 `0x05 0xFF` | 服务端拒绝继续会话。 |
 | RFC1929 用户名密码认证失败 | 用户名密码子协商回复 `0x01 0x01` | `RESIN_PROXY_TOKEN` 非空时密码必须等于 `PROXY_TOKEN`。 |
 | 命令不是 `CONNECT` | SOCKS5 reply `REP=0x07` | 当前实现不支持 `BIND` / `UDP ASSOCIATE`。 |
 | 地址类型不支持 | SOCKS5 reply `REP=0x08` | 当前仅支持 IPv4 / IPv6 / 域名三类标准地址。 |
@@ -1140,6 +1137,38 @@ Body（partial patch 示例）：
 * `400 INVALID_ARGUMENT`：空 patch、字段非法、类型错误、校验失败。
 
 返回：更新后的 config。
+
+### Endpoint
+
+默认接入点的 `id` 固定为 `default`、`source` 为 `environment`、`read_only=true`。自定义接入点使用 UUID，保存于 `state.db`。
+
+```json
+{
+  "id": "uuid|default",
+  "port": 2260,
+  "enabled": true,
+  "allow_management": true,
+  "allow_proxy": true,
+  "require_proxy_auth_info": false,
+  "allow_http_forward": true,
+  "allow_http_reverse": true,
+  "allow_socks5": true,
+  "source": "environment|database",
+  "read_only": false,
+  "status": "active|starting|inactive|error",
+  "last_error": ""
+}
+```
+
+`enabled` 表示持久化的期望状态；`status` 与 `last_error` 表示 listener 的实际运行状态。两者可能在 listener 启动失败时不同，例如 `enabled=true`、`status=error`。
+
+* **GET** `/endpoints`：支持 `limit` / `offset` 分页；默认接入点置顶，其余按端口升序排列后分页，返回 `{ "items": [...], "total": 1, "limit": 50, "offset": 0 }`。
+* **POST** `/endpoints`：创建自定义接入点。请求可传 `enabled`；省略时默认为 `true` 并立即启动 listener，传 `false` 时只持久化配置且返回 `status=inactive`。
+* **GET** `/endpoints/{endpoint_id}`：读取单个接入点。
+* **PATCH** `/endpoints/{endpoint_id}`：更新 `enabled`、端口或能力。`enabled` 从 `true` 变为 `false` 时持久化禁用状态并关闭 listener；从 `false` 变为 `true` 时启动 listener，启动失败则回滚本次 patch。patch 后所有字段均未变化时直接返回当前状态，不写数据库、不更新 `updated_at`、不重新应用 listener。端口变更时先确认新 listener 可绑定，再关闭旧 listener；禁用状态下修改其他配置只保存配置，不启动 listener。
+* **DELETE** `/endpoints/{endpoint_id}`：删除自定义接入点并关闭 listener。
+
+端口范围为 1-65535 且全局唯一；管理页面与代理至少启用一项；启用代理时至少启用一种代理协议。默认接入点拒绝 PATCH 与 DELETE。
 
 ### Platform
 
@@ -2282,7 +2311,7 @@ GeoIP 与订阅的下载都有错误重试的需求。
 * RESIN_STATE_DIR：配置目录。默认 /var/lib/resin
 * RESIN_LOG_DIR：日志目录。默认 /var/log/resin
 * RESIN_LISTEN_ADDRESS：Resin 统一监听地址。默认 `0.0.0.0`
-* RESIN_PORT：Resin 单端口（控制面 API + WebUI + HTTP 正向代理 + SOCKS5 正向代理 + 反向代理）。默认 2260
+* RESIN_PORT：Resin 默认接入点端口（控制面 API + WebUI + HTTP 正向代理 + SOCKS5 正向代理 + 反向代理）。默认 2260；该接入点只读，自定义接入点保存在 `state.db`。
 * RESIN_API_MAX_BODY_BYTES：控制面 API（`/api/*`）请求体最大字节数。超限返回 `413 PAYLOAD_TOO_LARGE`。仅作用于控制面，不作用于 HTTP 正向代理 / SOCKS5 正向代理 / 反向代理数据面。默认 1048576（1 MiB）。
 
 核心设置：
@@ -2312,13 +2341,9 @@ GeoIP 与订阅的下载都有错误重试的需求。
 
 认证设置：
 * 启动时会先加载当前工作目录下的 `.env` 文件（文件不存在则忽略；格式错误则拒绝启动）；系统或 shell 已设置的环境变量优先于 `.env`。
-* `RESIN_AUTH_VERSION`：认证解析版本。必填。枚举：`LEGACY_V0|V1`。用于认证格式迁移。缺失或非法值时拒绝启动。
-  * `LEGACY_V0`：兼容旧认证格式，禁用 V1 新格式解析，并禁用 SOCKS5 正向代理入口。
-  * `V1`：启用新认证格式与 SOCKS5 正向代理入口，并在启动期执行 V1 兼容性校验（`RESIN_PROXY_TOKEN` 与历史 Platform 名称）。
+* `RESIN_AUTH_VERSION`：可选的认证解析版本。未设置或为空时默认 `V1`；非空时仅允许 `V1`。
 * `RESIN_ADMIN_TOKEN`：访问 WebAPI 的认证 Token。环境变量必须定义；允许为空字符串。为空时关闭控制面鉴权。
-* `RESIN_PROXY_TOKEN`：访问代理的认证 Token。环境变量必须定义；允许为空字符串。为空时关闭 HTTP 正向代理 / 反向代理鉴权，并使 SOCKS5 允许 `NO AUTH`；非空时不能取保留值 `api`、`healthz`、`ui`。
-  * `LEGACY_V0`：非空时不能包含 `:` 或 `@`。
-  * `V1`：非空时不能包含 `.:|/\@?#%~`，且不能包含空格、tab、换行、回车。
+* `RESIN_PROXY_TOKEN`：访问代理的认证 Token。环境变量必须定义；允许为空字符串。为空时关闭 HTTP 正向代理 / 反向代理鉴权，并使 SOCKS5 允许 `NO AUTH`；非空时不能取保留值 `api`、`healthz`、`ui`，不能包含 `.:|/\@?#%~`，且不能包含空格、tab、换行、回车。
   * 对 SOCKS5 而言：当 Token 非空时，RFC1929 密码必须等于 `RESIN_PROXY_TOKEN`；当 Token 为空时，仍可通过 RFC1929 的 `username` 字段传递 `Platform/Account` 身份。
 * 当 Token 非空但强度较弱时，WebUI 首页会显示安全告警条幅（不阻止启动）。
 
@@ -2395,6 +2420,7 @@ WebUI 分为登录态与控制台态。未登录时进入登录页；登录后�
 * 平台管理
 * 订阅管理
 * 节点池
+* 接入点
 * 请求头规则
 * 请求日志
 * 资源
@@ -2447,6 +2473,11 @@ WebUI 分为登录态与控制台态。未登录时进入登录页；登录后�
 中部为节点表格，展示节点标签、出口、延迟、探测时间、失败次数、状态、创建时间等，并支持分页。
 
 点击表格行打开节点详情 Drawer，展示节点状态、别名标签与运维操作（出口探测、延迟探测）。
+
+## 接入点
+页面以分页的单列卡片按自然阅读顺序展示端口、运行状态、已启用能力和代理认证策略。
+
+默认接入点显示只读锁定状态。自定义接入点提供编辑与删除图标操作。
 
 ## 请求头规则
 页面顶部工具栏包含搜索、新建、调试、刷新。

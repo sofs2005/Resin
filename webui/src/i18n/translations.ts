@@ -12,8 +12,11 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "退出登录": "Sign Out",
   "当前为免认证访问模式": "Running in no-auth mode",
   "管理员登录": "Admin Login",
-  "输入后端 `RESIN_ADMIN_TOKEN` 进入控制台。": "Enter backend `RESIN_ADMIN_TOKEN` to access the console.",
-  "粘贴 Bearer Token（仅本地保存）": "Paste Bearer Token (stored locally only)",
+  "管理员令牌": "Admin Token",
+  "管理员令牌通过 `RESIN_ADMIN_TOKEN` 环境变量配置":
+    "The administrator token is configured through the `RESIN_ADMIN_TOKEN` environment variable",
+  "显示管理员令牌": "Show Admin Token",
+  "隐藏管理员令牌": "Hide Admin Token",
   "进入控制台": "Enter Console",
   "校验中...": "Verifying...",
   "请输入 Admin Token": "Please enter Admin Token",
@@ -22,6 +25,57 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "集中维护平台策略与节点分配规则。": "Centrally manage platform policies and node allocation rules.",
   "订阅管理": "Subscriptions",
   "节点池": "Node Pool",
+  "接入点": "Endpoints",
+  "管理监听端口及其可用的接入能力。": "Manage listening ports and the access capabilities available on each one.",
+  "接入点列表": "Endpoint List",
+  "共 {{count}} 个接入点": "{{count}} endpoints",
+  "正在加载接入点...": "Loading endpoints...",
+  "暂无接入点": "No endpoints",
+  "新建接入点": "Create Endpoint",
+  "接入点详情": "Endpoint Details",
+  "编辑接入点": "Edit Endpoint",
+  "编辑接入点 :{{port}}": "Edit endpoint :{{port}}",
+  "删除接入点": "Delete Endpoint",
+  "删除接入点 :{{port}}": "Delete endpoint :{{port}}",
+  "监听端口": "Listening Port",
+  "启用接入点 :{{port}}": "Enable endpoint :{{port}}",
+  "禁用接入点 :{{port}}": "Disable endpoint :{{port}}",
+  "接入点 :{{port}} 已启用": "Endpoint :{{port}} enabled",
+  "接入点 :{{port}} 已禁用": "Endpoint :{{port}} disabled",
+  "接入点配置": "Endpoint Configuration",
+  "修改监听端口和接入能力后保存。": "Update the listening port and access capabilities, then save.",
+  "删除接入点并停止监听，操作不可撤销。":
+    "Delete the endpoint and stop its listener. This action cannot be undone.",
+  "启动中": "Starting",
+  "异常": "Error",
+  "未运行": "Inactive",
+  "默认 · 只读": "Default · Read-only",
+  "自定义": "Custom",
+  "默认接入点由环境端口定义，不可修改或删除":
+    "The default endpoint is defined by the environment port and cannot be changed or deleted",
+  "接入能力": "Access Capabilities",
+  "登录管理页面": "Admin Console Login",
+  "SOCKS5 代理": "SOCKS5 Proxy",
+  "强制客户端认证": "Require Client Authentication",
+  "认证策略": "Authentication Policy",
+  [`一些应用（例如浏览器）只有在代理服务器强制要求认证的时候，才会发送认证信息。
+因此，当 Resin 没有设置代理令牌时，这些应用不会向 Resin 发送认证字段，导致平台与账号信息缺失。
+如果你的 Resin 部署没有设置代理令牌，同时又需要兼容这些应用，可以开启此选项。
+注意：开启后，如果客户端没有发送认证信息，平台不再被视为 Default，而是拒绝请求。`]: `Some applications, such as browsers, send authentication information only when the proxy server explicitly requires authentication.
+Therefore, when Resin has no proxy token configured, these applications do not send authentication fields to Resin, resulting in missing platform and account information.
+If your Resin deployment has no proxy token configured and needs to support these applications, enable this option.
+Note: Once enabled, requests without authentication information are rejected instead of being treated as Default platform requests.`,
+  "监听错误：{{message}}": "Listener error: {{message}}",
+  "端口必须是 1 到 65535 之间的整数": "Port must be an integer between 1 and 65535",
+  "端口 {{port}} 已被其他接入点使用": "Port {{port}} is already used by another endpoint",
+  "至少启用管理页面或一种代理能力": "Enable the admin console or at least one proxy capability",
+  "强制客户端发送认证信息需要启用 HTTP 正向代理或 SOCKS5 代理":
+    "Requiring client authentication information requires HTTP forward proxy or SOCKS5 proxy",
+  "接入点 :{{port}} 已创建": "Endpoint :{{port}} created",
+  "接入点 :{{port}} 已更新": "Endpoint :{{port}} updated",
+  "接入点 :{{port}} 已删除": "Endpoint :{{port}} deleted",
+  "确认删除接入点 :{{port}}？该端口将立即停止监听。":
+    "Delete endpoint :{{port}}? This port will stop listening immediately.",
   "请求头规则": "Header Rules",
   "请求日志": "Request Logs",
   "资源": "Resources",
@@ -66,6 +120,7 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "未知错误": "Unknown error",
   "错误": "Error",
   "状态": "Status",
+  "刷新状态": "Refresh Status",
   "健康": "Healthy",
   "熔断": "Circuit Open",
   "待测": "Pending Test",
@@ -280,8 +335,6 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "代理免认证": "No-auth proxy",
   "后端 RESIN_PROXY_TOKEN 为空，正/反向代理无需认证。":
     "Backend RESIN_PROXY_TOKEN is empty; forward/reverse proxy require no authentication.",
-  "当前为 LEGACY_V0 鉴权，SOCKS5 正向代理未启用。":
-    "LEGACY_V0 auth is active; SOCKS5 forward proxy is not enabled.",
   "curl 示例": "curl example",
   "目标网址": "Target URL",
   "例如 https://api.ipify.org": "e.g. https://api.ipify.org",
@@ -511,6 +564,7 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "永久删除当前平台及其配置，操作不可撤销。":
     "Permanently delete this platform and its config. This action cannot be undone.",
   "正常": "Normal",
+  "未检查": "Not checked",
   "正则": "Regex",
   "中文": "中文",
   "重新整理当前平台可用节点，不会修改配置。":
@@ -632,9 +686,13 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "订阅 {{name}} 没有可清理的熔断或异常节点":
     "Subscription {{name}} has no circuit-open or failed nodes to clean",
   "订阅 {{name}} 已更新": "Subscription {{name}} updated",
+  "订阅 {{name}} 已启用": "Subscription {{name}} enabled",
+  "订阅 {{name}} 已禁用": "Subscription {{name}} disabled",
   "订阅 {{name}} 已清理 {{count}} 个节点": "Subscription {{name}} cleaned {{count}} nodes",
   "订阅 {{name}} 已删除": "Subscription {{name}} deleted",
   "订阅 {{name}} 已手动刷新": "Subscription {{name}} refreshed manually",
+  "启用订阅 {{name}}": "Enable subscription {{name}}",
+  "停用订阅 {{name}}": "Disable subscription {{name}}",
   "分桶": "Bin width",
   "更新于 {{time}}": "Updated {{time}}",
   "共 {{count}} 个订阅": "{{count}} subscriptions",

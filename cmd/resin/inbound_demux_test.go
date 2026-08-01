@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Resinat/Resin/internal/config"
 	"github.com/Resinat/Resin/internal/proxy"
 )
 
@@ -378,9 +377,7 @@ func TestInboundDemux_ShutdownUnblocksSocksHandshakePhase(t *testing.T) {
 		}),
 	}
 
-	socksHandler := proxy.NewSocks5Inbound(proxy.Socks5InboundConfig{
-		AuthVersion: string(config.AuthVersionV1),
-	})
+	socksHandler := proxy.NewSocks5Inbound(proxy.Socks5InboundConfig{})
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -878,6 +878,7 @@ export function RequestLogsPage() {
             onRowClick={(log) => openDrawer(log.id)}
             selectedRowId={drawerVisible ? detailLogId : undefined}
             getRowId={(log) => log.id}
+            className="data-table-logs"
             wrapClassName="data-table-wrap-logs"
           />
         ) : null}

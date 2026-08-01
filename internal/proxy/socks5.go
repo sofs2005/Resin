@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Resinat/Resin/internal/config"
 	"github.com/Resinat/Resin/internal/outbound"
 	"github.com/Resinat/Resin/internal/routing"
 )
@@ -38,7 +37,6 @@ var socks5HandshakeTimeout = 15 * time.Second
 // Socks5InboundConfig holds dependencies for the SOCKS5 inbound handler.
 type Socks5InboundConfig struct {
 	ProxyToken       string
-	AuthVersion      string
 	Router           *routing.Router
 	Pool             outbound.PoolAccessor
 	Health           HealthRecorder
@@ -49,10 +47,9 @@ type Socks5InboundConfig struct {
 
 // Socks5Inbound implements SOCKS5 CONNECT over a raw TCP connection.
 type Socks5Inbound struct {
-	token       string
-	authVersion config.AuthVersion
-	tunnel      tunnelDeps
-	events      EventEmitter
+	token  string
+	tunnel tunnelDeps
+	events EventEmitter
 }
 
 type socks5HandshakeResult struct {
@@ -68,13 +65,8 @@ func NewSocks5Inbound(cfg Socks5InboundConfig) *Socks5Inbound {
 	if ev == nil {
 		ev = NoOpEventEmitter{}
 	}
-	authVersion := config.NormalizeAuthVersion(cfg.AuthVersion)
-	if authVersion == "" {
-		authVersion = config.AuthVersionLegacyV0
-	}
 	return &Socks5Inbound{
-		token:       cfg.ProxyToken,
-		authVersion: authVersion,
+		token: cfg.ProxyToken,
 		tunnel: tunnelDeps{
 			router:      cfg.Router,
 			pool:        cfg.Pool,
@@ -107,7 +99,8 @@ func (s *Socks5Inbound) ServeConnContext(baseCtx context.Context, conn net.Conn)
 	handshakePhase := startSocks5HandshakePhase(handshakeCtx, conn)
 	defer handshakePhase.Stop()
 
-	handshake := s.performHandshake(conn, reader)
+	requireAuthInfo := InboundPolicyFromContext(baseCtx).RequireProxyAuthInfo && s.token == ""
+	handshake := s.performHandshake(conn, reader, requireAuthInfo)
 	if !handshake.ok {
 		return
 	}
@@ -169,13 +162,8 @@ func (s *Socks5Inbound) ServeConnContext(baseCtx context.Context, conn net.Conn)
 	prepare.session.recordResult(relay.netOK)
 }
 
-func (s *Socks5Inbound) performHandshake(conn net.Conn, reader *bufio.Reader) socks5HandshakeResult {
-	if s.authVersion != config.AuthVersionV1 {
-		_, _ = conn.Write([]byte{socks5Version, socks5MethodNoAcceptable})
-		return socks5HandshakeResult{}
-	}
-
-	method, ok := s.negotiateMethod(conn, reader)
+func (s *Socks5Inbound) performHandshake(conn net.Conn, reader *bufio.Reader, requireAuthInfo bool) socks5HandshakeResult {
+	method, ok := s.negotiateMethod(conn, reader, requireAuthInfo)
 	if !ok {
 		return socks5HandshakeResult{}
 	}
@@ -183,7 +171,7 @@ func (s *Socks5Inbound) performHandshake(conn net.Conn, reader *bufio.Reader) so
 	result := socks5HandshakeResult{ok: true}
 	if method == socks5MethodUserPass {
 		var authOK bool
-		result.platformName, result.account, authOK = s.authenticateUserPass(conn, reader)
+		result.platformName, result.account, authOK = s.authenticateUserPass(conn, reader, requireAuthInfo)
 		if !authOK {
 			return socks5HandshakeResult{}
 		}
@@ -256,7 +244,7 @@ func (p *socks5HandshakePhase) Stop() {
 	})
 }
 
-func (s *Socks5Inbound) negotiateMethod(conn net.Conn, reader *bufio.Reader) (byte, bool) {
+func (s *Socks5Inbound) negotiateMethod(conn net.Conn, reader *bufio.Reader, requireAuthInfo bool) (byte, bool) {
 	header := make([]byte, 2)
 	if _, err := io.ReadFull(reader, header); err != nil {
 		return 0, false
@@ -270,7 +258,7 @@ func (s *Socks5Inbound) negotiateMethod(conn net.Conn, reader *bufio.Reader) (by
 	}
 
 	selected := byte(socks5MethodNoAcceptable)
-	if s.token != "" {
+	if s.token != "" || requireAuthInfo {
 		if containsSocks5Method(methods, socks5MethodUserPass) {
 			selected = socks5MethodUserPass
 		}
@@ -292,7 +280,7 @@ func (s *Socks5Inbound) negotiateMethod(conn net.Conn, reader *bufio.Reader) (by
 	return selected, true
 }
 
-func (s *Socks5Inbound) authenticateUserPass(conn net.Conn, reader *bufio.Reader) (string, string, bool) {
+func (s *Socks5Inbound) authenticateUserPass(conn net.Conn, reader *bufio.Reader, requireAuthInfo bool) (string, string, bool) {
 	header := make([]byte, 2)
 	if _, err := io.ReadFull(reader, header); err != nil {
 		return "", "", false
@@ -317,6 +305,10 @@ func (s *Socks5Inbound) authenticateUserPass(conn net.Conn, reader *bufio.Reader
 	}
 
 	if s.token != "" && string(password) != s.token {
+		_, _ = conn.Write([]byte{socks5UserPassVersion, socks5UserPassStatusFailure})
+		return "", "", false
+	}
+	if requireAuthInfo && (len(username) == 0 || len(password) == 0) {
 		_, _ = conn.Write([]byte{socks5UserPassVersion, socks5UserPassStatusFailure})
 		return "", "", false
 	}
