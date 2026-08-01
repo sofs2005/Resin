@@ -267,7 +267,7 @@ export function NodesPage() {
   const [activeFilters, setActiveFilters] = useState<NodeListFilters>(() =>
     draftToActiveFilters(draftFromQuery(location.search))
   );
-  const [sortBy, setSortBy] = useState<NodeSortBy>("tag");
+  const [sortBy, setSortBy] = useState<NodeSortBy>("reference_latency_ms");
   const [sortOrder, setSortOrder] = useState<SortOrder>("asc");
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(200);
@@ -553,7 +553,12 @@ export function NodesPage() {
       },
     }),
     col.accessor("egress_ip", {
-      header: t("出口 IP"),
+      header: () => (
+        <button type="button" className="table-sort-btn" onClick={() => changeSort("egress_ip")}>
+          {t("出口 IP")}
+          <span>{sortIndicator(sortBy === "egress_ip", sortOrder)}</span>
+        </button>
+      ),
       cell: (info) => {
         const val = info.getValue() || "-";
         return (
@@ -565,7 +570,12 @@ export function NodesPage() {
     }),
     col.display({
       id: "reference_latency_ms",
-      header: t("参考延迟"),
+      header: () => (
+        <button type="button" className="table-sort-btn" onClick={() => changeSort("reference_latency_ms")}>
+          {t("参考延迟")}
+          <span>{sortIndicator(sortBy === "reference_latency_ms", sortOrder)}</span>
+        </button>
+      ),
       cell: (info) => {
         const node = info.row.original;
         const latencyMs = displayableReferenceLatencyMs(node);
@@ -580,7 +590,12 @@ export function NodesPage() {
       },
     }),
     col.accessor("last_latency_probe_attempt", {
-      header: t("上次探测"),
+      header: () => (
+        <button type="button" className="table-sort-btn" onClick={() => changeSort("last_latency_probe_attempt")}>
+          {t("上次探测")}
+          <span>{sortIndicator(sortBy === "last_latency_probe_attempt", sortOrder)}</span>
+        </button>
+      ),
       cell: (info) => formatRelativeTime(info.getValue()),
     }),
     col.accessor("failure_count", {

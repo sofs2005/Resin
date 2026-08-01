@@ -42,6 +42,16 @@ func compareNodeSummaries(sortBy string, a, b service.NodeSummary) int {
 		order = cmp.Compare(a.FailureCount, b.FailureCount)
 	case "region":
 		order = strings.Compare(a.Region, b.Region)
+	case "egress_ip":
+		order = strings.Compare(a.EgressIP, b.EgressIP)
+	case "reference_latency_ms":
+		// Callers must handle missing values before flipping sort order.
+		// Both present is guaranteed here for meaningful numeric compare.
+		if a.ReferenceLatencyMs != nil && b.ReferenceLatencyMs != nil {
+			order = cmp.Compare(*a.ReferenceLatencyMs, *b.ReferenceLatencyMs)
+		}
+	case "last_latency_probe_attempt":
+		order = strings.Compare(a.LastLatencyProbeAttempt, b.LastLatencyProbeAttempt)
 	default:
 		order = strings.Compare(nodeTagSortKey(a), nodeTagSortKey(b))
 	}
@@ -51,8 +61,37 @@ func compareNodeSummaries(sortBy string, a, b service.NodeSummary) int {
 	return strings.Compare(a.NodeHash, b.NodeHash)
 }
 
+// compareMissingLast keeps empty/unset sortable values at the end for both asc and desc.
+// Returns handled=true when one side is missing and the other is not.
+func compareMissingLast(sortBy string, a, b service.NodeSummary) (int, bool) {
+	var aMiss, bMiss bool
+	switch sortBy {
+	case "reference_latency_ms":
+		aMiss = a.ReferenceLatencyMs == nil
+		bMiss = b.ReferenceLatencyMs == nil
+	case "egress_ip":
+		aMiss = a.EgressIP == ""
+		bMiss = b.EgressIP == ""
+	case "last_latency_probe_attempt":
+		aMiss = a.LastLatencyProbeAttempt == ""
+		bMiss = b.LastLatencyProbeAttempt == ""
+	default:
+		return 0, false
+	}
+	if aMiss == bMiss {
+		return 0, false
+	}
+	if aMiss {
+		return 1, true
+	}
+	return -1, true
+}
+
 func sortNodeSummaries(nodes []service.NodeSummary, sorting Sorting) {
 	slices.SortStableFunc(nodes, func(a, b service.NodeSummary) int {
+		if order, handled := compareMissingLast(sorting.SortBy, a, b); handled {
+			return order
+		}
 		return applySortOrder(compareNodeSummaries(sorting.SortBy, a, b), sorting.SortOrder)
 	})
 }
@@ -152,7 +191,15 @@ func HandleListNodes(cp *service.ControlPlaneService) http.HandlerFunc {
 			return
 		}
 
-		sorting, ok := parseSortingOrWriteInvalid(w, r, []string{"tag", "created_at", "failure_count", "region"}, "tag", "asc")
+		sorting, ok := parseSortingOrWriteInvalid(w, r, []string{
+			"tag",
+			"created_at",
+			"failure_count",
+			"region",
+			"egress_ip",
+			"reference_latency_ms",
+			"last_latency_probe_attempt",
+		}, "reference_latency_ms", "asc")
 		if !ok {
 			return
 		}

@@ -53,7 +53,7 @@ export async function listNodes(filters: NodeListQuery): Promise<PageResponse<No
   const query = new URLSearchParams({
     limit: String(filters.limit ?? 50),
     offset: String(filters.offset ?? 0),
-    sort_by: filters.sort_by || "tag",
+    sort_by: filters.sort_by || "reference_latency_ms",
     sort_order: filters.sort_order || "asc",
   });
 
