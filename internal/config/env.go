@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -133,7 +132,7 @@ func LoadEnvConfig() (*EnvConfig, error) {
 	cfg.RequestLogQueueFlushBatchSize = envInt("RESIN_REQUEST_LOG_QUEUE_FLUSH_BATCH_SIZE", 4096, &errs)
 	cfg.RequestLogQueueFlushInterval = envDuration("RESIN_REQUEST_LOG_QUEUE_FLUSH_INTERVAL", 5*time.Minute, &errs)
 	cfg.RequestLogDBMaxMB = envInt("RESIN_REQUEST_LOG_DB_MAX_MB", 512, &errs)
-	cfg.RequestLogDBRetainCount = envInt("RESIN_REQUEST_LOG_DB_RETAIN_COUNT", 5, &errs)
+	cfg.RequestLogDBRetainCount = envInt("RESIN_REQUEST_LOG_DB_RETAIN_COUNT", 2, &errs)
 
 	// --- Auth (tokens must be defined; empty means auth disabled) ---
 	authVersionRaw := os.Getenv("RESIN_AUTH_VERSION")
@@ -205,10 +204,8 @@ func LoadEnvConfig() (*EnvConfig, error) {
 	if cfg.DefaultPlatformStickyTTL <= 0 {
 		errs = append(errs, "RESIN_DEFAULT_PLATFORM_STICKY_TTL must be positive")
 	}
-	for _, pattern := range cfg.DefaultPlatformRegexFilters {
-		if _, err := regexp.Compile(pattern); err != nil {
-			errs = append(errs, fmt.Sprintf("RESIN_DEFAULT_PLATFORM_REGEX_FILTERS: invalid regex %q: %v", pattern, err))
-		}
+	if _, err := platform.CompileRegexFilters(cfg.DefaultPlatformRegexFilters); err != nil {
+		errs = append(errs, fmt.Sprintf("RESIN_DEFAULT_PLATFORM_REGEX_FILTERS: %v", err))
 	}
 	if err := platform.ValidateRegionFilters(cfg.DefaultPlatformRegionFilters); err != nil {
 		errs = append(errs, fmt.Sprintf("RESIN_DEFAULT_PLATFORM_REGION_FILTERS: %v", err))

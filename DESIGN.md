@@ -28,8 +28,8 @@
 * ID：全不可变 UUID，作为主键。
 * Name：平台名，全局唯一。
 * StickyTTL: time.Duration，该平台的粘性租约寿命。
-* RegexFilters：一个正则表达式列表。按照节点的 Tag 的正则表达式过滤器。同时满足所有过滤器才符合条件。
-* RegexFiltersCompiled：编译后的正则表达式列表。用于运行时匹配。随着 RegexFilters 更新。
+* RegexFilters：节点标签过滤规则列表，语法见“节点标签过滤规则”。
+* RegexFiltersCompiled：按规则类型分组的编译结果。随着 RegexFilters 更新。
 * RegionFilters：一个地区列表。小写 ISO codes (e.g., "hk", "us")。节点的出口 IP 地区属于该列表才符合条件。空表示不做地区筛选。
 * 反向代理 Account 为空时的行为：随机路由 / 固定 Header 提取 / 按 Account Header Rule 提取。
 * 反向代理匹配 Account 失败后的行为：随机路由 或 拒绝请求。默认是随机路由。
@@ -267,9 +267,7 @@ No available proxy nodes
 	* CreatedAt：节点的创建时间。指的是节点首次被添加到全局池的时间。程序重启不变。
 	* SubscriptionIDs：一个 slice。表示持有该节点的订阅 ID 集合。
   * --- 方法 ---
-	* MatchRegexs(regexes []*regexp.Regexp) bool：用于判断该节点是否符合给定的正则表达式列表。
-        * 逻辑：遍历 `SubscriptionIDs`，找到这些订阅及其 View 中的 Tags。遍历的时候加读锁。
-        * 只有当节点在**任意一个** Enabled 订阅下的**任意一个** Tag 满足**所有**正则表达式时，返回 true。Tag 匹配时使用 `<订阅名>/<Tag>` 的格式。
+	* MatchTagFilter(filter TagFilter, subLookup SubLookupFunc) bool：按“节点标签过滤规则”判断节点是否匹配。
 
 本项目不使用原生的 sing-box OutboundManager，而是实现上述高性能 Outbound Manager。
 
@@ -279,7 +277,7 @@ No available proxy nodes
 * 特质：支持 O(1) 的随机选取与 O(1) 的增删查。
 * 过滤条件：
     1. 节点状态正常（非 Circuit Break）。
-    2. 调用 `NodeEntry.MatchRegexs(Platform.RegexFilters)` 判断 Tag 是否匹配。
+    2. 调用 `NodeEntry.MatchTagFilter(Platform.RegexFilters, subLookup)` 判断 Tag 是否匹配。
     3. 节点必须有出口 IP（无论 Platform 是否配置 `RegionFilters`）。
     4. 若 `RegionFilters` 非空，则节点出口 IP 地区必须符合 `RegionFilters`。
     5. 有至少一条延迟信息。
@@ -295,7 +293,7 @@ Platform 应该向外提供一个脏更新的接口，用来通知脏节点。�
 
 动态更新的时机：
 	* 出口 IP 变更：当 `ProbeManager` 探测到节点出口 IP 发生变化（或从无到有）。属于脏更新。
-	* 节点引用变更：当节点的 SubscriptionIDs 发生变化，可能会影响 MatchRegexs 的结果（因为 Tag 集合变了）。属于脏更新。
+	* 节点引用变更：当节点的 SubscriptionIDs 发生变化，可能会影响 MatchTagFilter 的结果（因为 Tag 集合变了）。属于脏更新。
 	* 熔断触发 / 恢复：属于脏更新。	
 	* Platform 过滤器配置变更：全量重建。
 
@@ -359,7 +357,17 @@ sing-box 原版使用节点的名字 Tag 作为节点的 ID。但 Resin 使用 N
 ### 节点的 Tag
 全局池中的节点没有 Tag 的概念。Tag 是订阅视图下的概念。
 Tag 的统一格式是 `<订阅名>/<原始 Tag>`。
-Platform 过滤时，通过 `NodeEntry.MatchRegexs` 方法，反向查询 Referencing Subscriptions 的视图来获取 Tag。
+Platform 过滤时，通过 `NodeEntry.MatchTagFilter` 方法，反向查询 Referencing Subscriptions 的视图来获取 Tag。
+
+#### 节点标签过滤规则
+
+每项规则匹配 `<订阅名>/<Tag>`，仅首字符作为规则前缀，剩余内容按 Go 正则解析：
+
+* 普通规则为 ANY，普通规则之间为 OR。
+* `*` 前缀为 MUST，所有 MUST 都必须命中。
+* `!` 前缀为 MUST_NOT，任意 MUST_NOT 命中即排除整个节点。
+
+正向条件必须由同一个 Enabled Tag 满足：所有 MUST 均命中，且 ANY 为空或至少一个 ANY 命中。MUST_NOT 检查节点的所有 Enabled Tag。没有正向规则时，任何拥有 Enabled Subscription 且未被排除的节点都满足标签过滤。
 
 
 ### 由热路径 / 冷路径决定的设计决策
@@ -580,7 +588,7 @@ BootstrapLoader
 
 Resin 项目中所有的数据库都设计为单写，不会有多进程写入。
 
-数据库 schema 使用 golang-migrate 做版本化 migration。
+数据库 schema 使用 golang-migrate 做版本化 migration。无法无损映射到旧数据模型的 migration 不提供 down 文件；降级时必须恢复升级前的数据库备份。
 
 ### SQLite 数据模型
 #### state.db
@@ -1179,7 +1187,7 @@ Body（partial patch 示例）：
   "id": "uuid",
   "name": "Default",
   "sticky_ttl": "30m",
-  "regex_filters": ["^sub1/.*", ".*hk.*"],
+  "regex_filters": ["*^sub1/.*", ".*hk.*", "!过期"],
   "region_filters": ["hk","us"],
   "routable_node_count": 123,
   "reverse_proxy_miss_action": "TREAT_AS_EMPTY|REJECT",
@@ -1229,7 +1237,7 @@ Body：
 
 * `name`：trim 后需非空、全局唯一；不能为保留名 `Default` 或 `api`（大小写不敏感）；且不能包含 `.:|/\@?#%~`、空格、tab、换行、回车。
 * `sticky_ttl`：合法 Go duration。
-* `regex_filters`：每项可被 regexp 编译。
+* `regex_filters`：节点标签过滤规则列表，语义与校验见“节点标签过滤规则”。
 * `region_filters`：每项为 ISO 3166-1 alpha-2 小写代码。
 * 枚举字段：`reverse_proxy_miss_action` 仅 `TREAT_AS_EMPTY|REJECT`；`reverse_proxy_empty_account_behavior` 仅 `RANDOM|FIXED_HEADER|ACCOUNT_HEADER_RULE`；`allocation_policy` 仅 `BALANCED|PREFER_LOW_LATENCY|PREFER_IDLE_IP`。
 * `passive_circuit_breaker_disabled`：布尔值。设为 `true` 后，此 Platform 的用户代理请求失败不会增加节点熔断计数；主动探测不受影响。成功请求仍会清除节点连续失败计数并可恢复熔断节点。
@@ -1333,7 +1341,7 @@ Body（partial patch 示例）：
 关键校验（最小集）：
 
 * `platform_id`：必须存在。
-* `platform_spec.regex_filters`：每项可被 regexp 编译。
+* `platform_spec.regex_filters`：同 Platform 的 `regex_filters`。
 * `platform_spec.region_filters`：每项为 ISO 3166-1 alpha-2 小写代码。
 
 错误码映射（最小集）：
@@ -2319,7 +2327,7 @@ GeoIP 与订阅的下载都有错误重试的需求。
 * `RESIN_PROBE_CONCURRENCY`：节点探测的最大并发数量。默认 1000，最大 10000（超限启动失败）。
 * `RESIN_GEOIP_UPDATE_SCHEDULE`：GeoIP 数据库自动更新的 Cron 表达式。默认 "0 7 * * *"。
 * `RESIN_DEFAULT_PLATFORM_STICKY_TTL`：默认平台粘性会话时长。默认 "168h"。
-* `RESIN_DEFAULT_PLATFORM_REGEX_FILTERS`：默认平台正则过滤器（JSON 字符串数组）。默认 `[]`。
+* `RESIN_DEFAULT_PLATFORM_REGEX_FILTERS`：默认平台节点标签过滤规则（JSON 字符串数组）。默认 `[]`。
 * `RESIN_DEFAULT_PLATFORM_REGION_FILTERS`：默认平台地区过滤器（JSON 字符串数组，小写 ISO 3166-1 alpha-2）。默认 `[]`。
 * `RESIN_DEFAULT_PLATFORM_REVERSE_PROXY_MISS_ACTION`：默认平台反代 miss 行为。枚举：`TREAT_AS_EMPTY|REJECT`。默认 `TREAT_AS_EMPTY`。
 * `RESIN_DEFAULT_PLATFORM_REVERSE_PROXY_EMPTY_ACCOUNT_BEHAVIOR`：默认平台在反代 Account 为空时的行为。枚举：`RANDOM|FIXED_HEADER|ACCOUNT_HEADER_RULE`。默认 `ACCOUNT_HEADER_RULE`。
@@ -2337,7 +2345,7 @@ GeoIP 与订阅的下载都有错误重试的需求。
 * `RESIN_REQUEST_LOG_QUEUE_FLUSH_BATCH_SIZE`：批量写入数据库的大小。默认 4096.
 * `RESIN_REQUEST_LOG_QUEUE_FLUSH_INTERVAL`：写库间隔。默认 "5m"。
 * `RESIN_REQUEST_LOG_DB_MAX_MB`：SQLite 当前活动日志数据库的最大字节数。默认 512。
-* `RESIN_REQUEST_LOG_DB_RETAIN_COUNT`：保留的历史日志数据库文件数量（滚动日志），默认 5。
+* `RESIN_REQUEST_LOG_DB_RETAIN_COUNT`：保留的日志数据库文件总数（滚动日志），默认 2。
 
 认证设置：
 * 启动时会先加载当前工作目录下的 `.env` 文件（文件不存在则忽略；格式错误则拒绝启动）；系统或 shell 已设置的环境变量优先于 `.env`。

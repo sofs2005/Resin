@@ -160,6 +160,18 @@ us
 hk
 ```
 
+Node tag rules match `<SubscriptionName>/<NodeTag>`, with one regular expression per line. Plain rules are ORed, a leading `*` marks a required rule, and a leading `!` excludes a node on any match. For example, this selects dedicated Hong Kong or Japan nodes while excluding expired and invalid nodes:
+
+```text
+Hong Kong
+Japan
+*Dedicated
+!Expired
+!Invalid
+```
+
+Only the first character is interpreted as a rule prefix; the rest remains a Go regular expression. Escape a literal leading `!` as `\!`.
+
 For forward proxy (HTTP / SOCKS5), include Platform in the auth info. Examples:
 
 ```bash

@@ -2773,9 +2773,27 @@ a {
   width: 100%;
 }
 
-.platform-lease-head>div {
+.platform-lease-heading {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.platform-lease-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.platform-lease-search {
+  width: min(240px, 36vw);
+  margin: 0;
+  gap: 6px;
+}
+
+.platform-lease-search .input {
+  min-width: 0;
+  padding: 6px 10px;
 }
 
 .platform-lease-head .btn {
@@ -3326,6 +3344,20 @@ a {
   .platform-detail-tab {
     padding: 8px 12px;
     font-size: 13px;
+  }
+
+  .platform-lease-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .platform-lease-toolbar {
+    width: 100%;
+  }
+
+  .platform-lease-search {
+    width: auto;
+    flex: 1 1 auto;
   }
 
   .filter-grid {

@@ -363,11 +363,12 @@ Note: Once enabled, requests without authentication information are rejected ins
   "地区过滤规则": "Region filters",
   "地区过滤规则（可选）": "Region filters (optional)",
   "每行一条": "One per line",
-  "每行一条，例如 .*专线.* 或 <订阅名>/.*": "One per line, e.g. .*Dedicated.* or <SubscriptionName>/.*",
-  "技巧：<订阅名>/.* 可筛选来自该订阅的节点。":
-    "Tip: use <SubscriptionName>/.* to match nodes from that subscription.",
-  "满足所有正则表达式的节点才会被选择":
-    "Only nodes that satisfy all regex expressions will be selected.",
+  "每行一条正则表达式，例如：\n\n香港\n日本\n*专线\n!过期\n!失效\n\n表示：选择【香港】或【日本】的【专线】节点，并排除包含【过期】或【失效】的节点。":
+    "One regular expression per line, for example:\n\nHong Kong\nJapan\n*Dedicated\n!Expired\n!Invalid\n\nMeaning: select [Dedicated] nodes containing [Hong Kong] or [Japan], and exclude nodes containing [Expired] or [Invalid].",
+  "普通正则表达式表示满足其一，* 开头表示必须包含，! 开头表示排除。":
+    "Plain regular expressions are ORed; a leading * means required; a leading ! means excluded.",
+  "技巧：^<订阅名>/ 可筛选来自该订阅的节点。":
+    "Tip: use ^<SubscriptionName>/ to match nodes from that subscription.",
   "每行一条，如 hk / us": "One per line, e.g. hk / us",
   "每行一条，如 hk / us / !hk": "One per line, e.g. hk / us / !hk",
   "支持反选：以 ! 开头可排除地区（如 !hk）。可与正选混用，最终结果为“先正选再排除”。":
@@ -639,6 +640,7 @@ Note: Once enabled, requests without authentication information are rejected ins
   "搜索订阅": "Search subscriptions",
   "搜索规则": "Search rules",
   "搜索平台": "Search platforms",
+  "搜索账号": "Search accounts",
   "延迟测试目标 URL 必须是 http/https 地址":
     "Latency test target URL must be an http/https URL",
   "延迟测试目标 URL 不能为空": "Latency test target URL cannot be empty",
@@ -653,6 +655,7 @@ Note: Once enabled, requests without authentication information are rejected ins
     "View current lease bindings for this platform and release individual account leases.",
   "正在加载租约数据...": "Loading leases...",
   "当前平台暂无租约": "No leases for this platform",
+  "没有匹配的租约": "No matching leases",
   "重置、清租约、删除操作": "Reset, clear leases, and delete operations",
   "重建、重置、清租约、删除操作": "Rebuild, reset, clear leases, and delete operations",
   "立即清除当前平台的全部租约，下次请求将重新分配出口。":
