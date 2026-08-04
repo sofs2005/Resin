@@ -428,6 +428,9 @@ Note: Once enabled, requests without authentication information are rejected ins
   "持久化策略": "Persistence policy",
   "出口 / 区域": "Egress / Region",
   "出口 IP 更新检查间隔": "Egress IP refresh check interval",
+  "出口探测 URL 列表": "Egress probe URL list",
+  "每行一个地址，按顺序尝试；地址必须返回 Cloudflare trace 格式。":
+    "One URL per line, tried in order; each URL must return Cloudflare trace format.",
   "出口 IP 数": "Egress IP count",
   "出口探测": "Egress probe",
   "窗口内下载 / 上传流量（字节）": "Download / upload traffic in window (bytes)",

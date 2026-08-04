@@ -639,6 +639,7 @@ func TestGetSubscription_NodeCountExcludesEvictedManagedNodes(t *testing.T) {
 	}
 	activeOutbound := testutil.NewNoopOutbound()
 	activeEntry.Outbound.Store(&activeOutbound)
+	activeEntry.SetEgressIP(netip.MustParseAddr("203.0.113.9"))
 	activeEntry.SuccessCount.Store(3)
 	pool.RecordResult(activeHash, true)
 
@@ -655,6 +656,7 @@ func TestGetSubscription_NodeCountExcludesEvictedManagedNodes(t *testing.T) {
 	}
 	sharedOutbound := testutil.NewNoopOutbound()
 	sharedEntry.Outbound.Store(&sharedOutbound)
+	sharedEntry.SetEgressIP(netip.MustParseAddr("203.0.113.10"))
 	sharedEntry.SuccessCount.Store(3)
 	pool.RecordResult(sharedHash, true)
 

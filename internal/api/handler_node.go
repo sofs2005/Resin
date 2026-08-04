@@ -108,7 +108,7 @@ type nodeListPageResponse struct {
 func countUniqueEgressIPs(nodes []service.NodeSummary) int {
 	seen := make(map[string]struct{})
 	for _, n := range nodes {
-		if n.EgressIP == "" {
+		if !n.EgressReady || n.EgressIP == "" {
 			continue
 		}
 		seen[n.EgressIP] = struct{}{}
@@ -119,7 +119,7 @@ func countUniqueEgressIPs(nodes []service.NodeSummary) int {
 func countUniqueHealthyAndEnabledEgressIPs(nodes []service.NodeSummary) int {
 	seen := make(map[string]struct{})
 	for _, n := range nodes {
-		if n.EgressIP == "" {
+		if !n.EgressReady || n.EgressIP == "" {
 			continue
 		}
 		if !n.IsHealthyAndEnabled() {

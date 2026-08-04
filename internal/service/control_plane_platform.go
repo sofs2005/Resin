@@ -599,6 +599,7 @@ type NodeSummary struct {
 	FailureCount                     int       `json:"failure_count"`
 	SuccessCount                     int       `json:"success_count"`
 	HealthStatus                     string    `json:"health_status"`
+	EgressReady                      bool      `json:"egress_ready"`
 	EgressIP                         string    `json:"egress_ip,omitempty"`
 	Region                           string    `json:"region,omitempty"`
 	LastEgressUpdate                 string    `json:"last_egress_update,omitempty"`
@@ -641,14 +642,15 @@ func (s *ControlPlaneService) nodeEntryToSummary(h node.Hash, entry *node.NodeEn
 		}
 	}
 	ns := NodeSummary{
-		NodeHash:      h.Hex(),
-		CreatedAt:     entry.CreatedAt.UTC().Format(time.RFC3339Nano),
-		Enabled:       true,
-		HasOutbound:   entry.HasOutbound(),
-		LastError:     entry.GetLastError(),
-		FailureCount:  int(entry.FailureCount.Load()),
-		SuccessCount:  int(entry.SuccessCount.Load()),
-		HealthStatus:  string(entry.ResolveHealthStatus(minSuccesses)),
+		NodeHash:     h.Hex(),
+		CreatedAt:    entry.CreatedAt.UTC().Format(time.RFC3339Nano),
+		Enabled:      true,
+		HasOutbound:  entry.HasOutbound(),
+		LastError:    entry.GetLastError(),
+		FailureCount: int(entry.FailureCount.Load()),
+		SuccessCount: int(entry.SuccessCount.Load()),
+		HealthStatus: string(entry.ResolveHealthStatus(minSuccesses)),
+		EgressReady:  entry.IsEgressReady(),
 	}
 
 	if s != nil && s.Pool != nil {

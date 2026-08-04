@@ -502,6 +502,43 @@ func TestUpdateNodeEgressIP_LocStateMachine(t *testing.T) {
 	}
 }
 
+func TestUpdateNodeEgressIP_FailureRemovesFromPlatformView(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	sub := subscription.NewSubscription("s1", "TestSub", "url", true, false)
+	subMgr.Register(sub)
+	pool := NewGlobalNodePool(PoolConfig{
+		SubLookup:              subMgr.Lookup,
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+	plat := platform.NewPlatform("p1", "Test", nil, nil)
+	pool.RegisterPlatform(plat)
+	h := addTestNode(pool, sub, `{"type":"egress-ready-view"}`)
+	entry, ok := pool.GetEntry(h)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	ob := testutil.NewNoopOutbound()
+	entry.Outbound.Store(&ob)
+	entry.LatencyTable.LoadEntry("example.com", node.DomainLatencyStats{Ewma: 10 * time.Millisecond, LastUpdated: time.Now()})
+	entry.SetEgressIP(netip.MustParseAddr("203.0.113.5"))
+	pool.RecordResult(h, true)
+	pool.RebuildAllPlatforms()
+	if got := plat.View().Size(); got != 1 {
+		t.Fatalf("view size before egress failure: got %d, want 1", got)
+	}
+
+	pool.UpdateNodeEgressIP(h, nil, nil)
+	if entry.IsEgressReady() {
+		t.Fatal("failed egress update should revoke readiness")
+	}
+	if got := plat.View().Size(); got != 0 {
+		t.Fatalf("view size after egress failure: got %d, want 0", got)
+	}
+	if got := entry.GetEgressIP(); !got.IsValid() {
+		t.Fatal("last-known egress IP should remain available for diagnostics")
+	}
+}
 
 func TestRecordResult_ConsecutiveSuccessesForHealthy(t *testing.T) {
 	pool, subMgr := newHealthTestPool(3)
@@ -523,6 +560,7 @@ func TestRecordResult_ConsecutiveSuccessesForHealthy(t *testing.T) {
 	entry, _ := pool.GetEntry(h)
 	ob := testutil.NewNoopOutbound()
 	entry.Outbound.Store(&ob)
+	entry.SetEgressIP(netip.MustParseAddr("203.0.113.10"))
 
 	// New node is circuit-open / unhealthy.
 	if entry.IsAvailable() || entry.IsHealthy(3) {

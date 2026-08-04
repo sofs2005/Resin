@@ -312,6 +312,25 @@ func TestNodeEntry_LatencyCount(t *testing.T) {
 	}
 }
 
+func TestNodeEntry_HealthyRequiresEgressReady(t *testing.T) {
+	e := NewNodeEntry(Hash{}, nil, time.Now(), 0)
+	ob := testutil.NewNoopOutbound()
+	e.Outbound.Store(&ob)
+	e.SuccessCount.Store(3)
+
+	if e.IsAvailable() || e.IsHealthy(3) {
+		t.Fatal("health streak without egress readiness should not be routable")
+	}
+	if got := e.ResolveHealthStatus(3); got != HealthStatusUnhealthy {
+		t.Fatalf("health status without egress readiness: got %s", got)
+	}
+
+	e.SetEgressIP(netip.MustParseAddr("203.0.113.1"))
+	if !e.IsAvailable() || !e.IsHealthy(3) {
+		t.Fatal("valid egress should make a stable node routable and healthy")
+	}
+}
+
 func TestNodeEntry_Outbound(t *testing.T) {
 	e := NewNodeEntry(Hash{}, nil, time.Now(), 0)
 	if e.HasOutbound() {
@@ -336,6 +355,7 @@ func TestNodeEntry_IsHealthy(t *testing.T) {
 
 	ob := testutil.NewNoopOutbound()
 	e.Outbound.Store(&ob)
+	e.SetEgressIP(netip.MustParseAddr("1.2.3.4"))
 	if !e.IsAvailable() {
 		t.Fatal("node with outbound and no circuit should be available")
 	}

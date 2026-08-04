@@ -28,6 +28,7 @@ type RuntimeConfigForm = {
   max_egress_test_interval: string;
   latency_test_url: string;
   latency_authorities_raw: string;
+  egress_trace_urls_raw: string;
   p2c_latency_window: string;
   latency_decay_window: string;
   cache_flush_interval: string;
@@ -48,6 +49,7 @@ const EDITABLE_FIELDS: Array<keyof RuntimeConfig> = [
   "max_egress_test_interval",
   "latency_test_url",
   "latency_authorities",
+  "egress_trace_urls",
   "p2c_latency_window",
   "latency_decay_window",
   "cache_flush_interval",
@@ -68,6 +70,7 @@ const FIELD_LABELS: Record<keyof RuntimeConfig, string> = {
   max_egress_test_interval: "出口 IP 更新检查间隔",
   latency_test_url: "延迟测试目标 URL",
   latency_authorities: "延迟测试权威域名列表",
+  egress_trace_urls: "出口探测 URL 列表",
   p2c_latency_window: "P2C 延迟衰减窗口",
   latency_decay_window: "历史延迟衰减窗口",
   cache_flush_interval: "缓存异步刷盘间隔",
@@ -106,6 +109,7 @@ function configToForm(config: RuntimeConfig): RuntimeConfigForm {
     max_egress_test_interval: config.max_egress_test_interval,
     latency_test_url: config.latency_test_url,
     latency_authorities_raw: config.latency_authorities.join("\n"),
+    egress_trace_urls_raw: config.egress_trace_urls.join("\n"),
     p2c_latency_window: config.p2c_latency_window,
     latency_decay_window: config.latency_decay_window,
     cache_flush_interval: config.cache_flush_interval,
@@ -154,6 +158,25 @@ function parseAuthorities(raw: string): string[] {
   return Array.from(new Set(items));
 }
 
+function parseEgressTraceURLs(raw: string): string[] {
+  const items = Array.from(new Set(raw.split(/[\n,]/).map((item) => item.trim()).filter(Boolean)));
+  if (!items.length) {
+    throw new Error("出口探测 URL 列表不能为空");
+  }
+  for (const item of items) {
+    let parsed: URL;
+    try {
+      parsed = new URL(item);
+    } catch {
+      throw new Error(`出口探测 URL 无效：${item}`);
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error(`出口探测 URL 必须是 http/https 地址：${item}`);
+    }
+  }
+  return items;
+}
+
 function parseForm(form: RuntimeConfigForm): RuntimeConfig {
   const latencyURL = form.latency_test_url.trim();
   if (!latencyURL) {
@@ -189,6 +212,7 @@ function parseForm(form: RuntimeConfigForm): RuntimeConfig {
     max_egress_test_interval: parseDurationField("出口 IP 更新检查间隔", form.max_egress_test_interval),
     latency_test_url: latencyURL,
     latency_authorities: parseAuthorities(form.latency_authorities_raw),
+    egress_trace_urls: parseEgressTraceURLs(form.egress_trace_urls_raw),
     p2c_latency_window: parseDurationField("P2C 延迟衰减窗口", form.p2c_latency_window),
     latency_decay_window: parseDurationField("历史延迟衰减窗口", form.latency_decay_window),
     cache_flush_interval: parseDurationField("缓存异步刷盘间隔", form.cache_flush_interval),
@@ -598,6 +622,23 @@ export function SystemConfigPage() {
                       value={form.latency_test_url}
                       onChange={(event) => setFormField("latency_test_url", event.target.value)}
                     />
+                  </div>
+
+                  <div className="field-group field-span-2">
+                    <div style={{ display: "flex", alignItems: "center" }}>
+                      <label className="field-label" htmlFor="sys-egress-trace-urls" style={{ margin: 0 }}>
+                        {t("出口探测 URL 列表")}
+                      </label>
+                      {renderRestoreButton("egress_trace_urls_raw")}
+                    </div>
+                    <Textarea
+                      id="sys-egress-trace-urls"
+                      rows={4}
+                      placeholder={"https://cloudflare.com/cdn-cgi/trace\nhttps://www.cloudflare.com/cdn-cgi/trace"}
+                      value={form.egress_trace_urls_raw}
+                      onChange={(event) => setFormField("egress_trace_urls_raw", event.target.value)}
+                    />
+                    <p className="field-hint">{t("每行一个地址，按顺序尝试；地址必须返回 Cloudflare trace 格式。")}</p>
                   </div>
 
                   <div className="field-group">

@@ -1,8 +1,10 @@
 package probe
 
 import (
+	"context"
 	"errors"
 	"net/netip"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -75,6 +77,102 @@ func TestProbeEgress_Success(t *testing.T) {
 	}
 	if stats.Ewma != 42*time.Millisecond {
 		t.Fatalf("ewma: got %v, want %v", stats.Ewma, 42*time.Millisecond)
+	}
+}
+
+func TestProbeEgress_FallbackURL(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+
+	hash := node.HashFromRawOptions([]byte(`{"type":"egress-fallback"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"egress-fallback"}`), "sub1")
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+
+	var urls []string
+	mgr := NewProbeManager(ProbeConfig{
+		Pool: pool,
+		EgressTraceURLs: func() []string {
+			return []string{"https://primary.test/trace", "https://backup.test/trace"}
+		},
+		FetcherWithContext: func(_ context.Context, _ node.Hash, url string) ([]byte, time.Duration, error) {
+			urls = append(urls, url)
+			if url == "https://primary.test/trace" {
+				return []byte("not a trace"), 0, nil
+			}
+			return []byte("ip=203.0.113.44\nloc=CA"), 20 * time.Millisecond, nil
+		},
+	})
+
+	mgr.probeEgress(hash, entry)
+
+	if got, want := urls, []string{"https://primary.test/trace", "https://backup.test/trace"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("probe URL order: got %v, want %v", got, want)
+	}
+	if got := entry.GetEgressIP(); got != netip.MustParseAddr("203.0.113.44") {
+		t.Fatalf("egress IP: got %v", got)
+	}
+	if got := entry.GetEgressRegion(); got != "ca" {
+		t.Fatalf("egress region: got %q", got)
+	}
+	if !entry.IsEgressReady() {
+		t.Fatal("fallback success should mark egress ready")
+	}
+	if got := entry.FailureCount.Load(); got != 0 {
+		t.Fatalf("failure count after fallback success: got %d", got)
+	}
+}
+
+func TestProbeEgress_AllFallbacksFailRevokesReadiness(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+
+	hash := node.HashFromRawOptions([]byte(`{"type":"egress-fallback-fail"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"egress-fallback-fail"}`), "sub1")
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+	priorIP := netip.MustParseAddr("198.51.100.44")
+	entry.SetEgressIP(priorIP)
+	entry.SetEgressRegion("us")
+
+	var calls atomic.Int32
+	mgr := NewProbeManager(ProbeConfig{
+		Pool: pool,
+		EgressTraceURLs: func() []string {
+			return []string{"https://primary.test/trace", "https://backup.test/trace"}
+		},
+		FetcherWithContext: func(_ context.Context, _ node.Hash, _ string) ([]byte, time.Duration, error) {
+			calls.Add(1)
+			return nil, 0, errors.New("unreachable")
+		},
+	})
+
+	mgr.probeEgress(hash, entry)
+
+	if got, want := calls.Load(), int32(2); got != want {
+		t.Fatalf("fallback attempts: got %d, want %d", got, want)
+	}
+	if got := entry.FailureCount.Load(); got != 1 {
+		t.Fatalf("failure count: got %d, want 1", got)
+	}
+	if entry.IsEgressReady() {
+		t.Fatal("failed fallback should revoke egress readiness")
+	}
+	if got := entry.GetEgressIP(); got != priorIP {
+		t.Fatalf("last-known IP should be retained: got %v", got)
+	}
+	if got := entry.GetEgressRegion(); got != "us" {
+		t.Fatalf("last-known region should be retained: got %q", got)
 	}
 }
 

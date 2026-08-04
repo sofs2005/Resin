@@ -49,19 +49,19 @@ type GlobalNodePool struct {
 	maxLatencyTableEntries  int
 	maxConsecutiveFailures  func() int
 	minConsecutiveSuccesses func() int
-	latencyDecayWindow     func() time.Duration
-	latencyAuthorities     func() []string
+	latencyDecayWindow      func() time.Duration
+	latencyAuthorities      func() []string
 }
 
 // PoolConfig configures the GlobalNodePool.
 type PoolConfig struct {
-	SubLookup              func(subID string) *subscription.Subscription
-	GeoLookup              platform.GeoLookupFunc
-	OnNodeAdded            func(hash node.Hash)
-	OnNodeRemoved          func(hash node.Hash, entry *node.NodeEntry)
-	OnSubNodeChanged       func(subID string, hash node.Hash, added bool)
-	OnNodeDynamicChanged   func(hash node.Hash)
-	OnNodeLatencyChanged   func(hash node.Hash, domain string)
+	SubLookup               func(subID string) *subscription.Subscription
+	GeoLookup               platform.GeoLookupFunc
+	OnNodeAdded             func(hash node.Hash)
+	OnNodeRemoved           func(hash node.Hash, entry *node.NodeEntry)
+	OnSubNodeChanged        func(subID string, hash node.Hash, added bool)
+	OnNodeDynamicChanged    func(hash node.Hash)
+	OnNodeLatencyChanged    func(hash node.Hash, domain string)
 	MaxLatencyTableEntries  int
 	MaxConsecutiveFailures  func() int
 	MinConsecutiveSuccesses func() int
@@ -89,21 +89,21 @@ func NewGlobalNodePool(cfg PoolConfig) *GlobalNodePool {
 	}
 
 	return &GlobalNodePool{
-		nodes:                  xsync.NewMap[node.Hash, *node.NodeEntry](),
-		subLookup:              cfg.SubLookup,
-		geoLookup:              cfg.GeoLookup,
-		onNodeAdded:            cfg.OnNodeAdded,
-		onNodeRemoved:          cfg.OnNodeRemoved,
-		onSubNodeChanged:       cfg.OnSubNodeChanged,
-		onNodeDynamicChanged:   cfg.OnNodeDynamicChanged,
-		onNodeLatencyChanged:   cfg.OnNodeLatencyChanged,
-		maxLatencyTableEntries: cfg.MaxLatencyTableEntries,
+		nodes:                   xsync.NewMap[node.Hash, *node.NodeEntry](),
+		subLookup:               cfg.SubLookup,
+		geoLookup:               cfg.GeoLookup,
+		onNodeAdded:             cfg.OnNodeAdded,
+		onNodeRemoved:           cfg.OnNodeRemoved,
+		onSubNodeChanged:        cfg.OnSubNodeChanged,
+		onNodeDynamicChanged:    cfg.OnNodeDynamicChanged,
+		onNodeLatencyChanged:    cfg.OnNodeLatencyChanged,
+		maxLatencyTableEntries:  cfg.MaxLatencyTableEntries,
 		maxConsecutiveFailures:  maxConsecutiveFailuresFn,
 		minConsecutiveSuccesses: minConsecutiveSuccessesFn,
-		latencyDecayWindow:     cfg.LatencyDecayWindow,
-		latencyAuthorities:     cfg.LatencyAuthorities,
-		platformByID:           make(map[string]*platform.Platform),
-		platformByName:         make(map[string]*platform.Platform),
+		latencyDecayWindow:      cfg.LatencyDecayWindow,
+		latencyAuthorities:      cfg.LatencyAuthorities,
+		platformByID:            make(map[string]*platform.Platform),
+		platformByName:          make(map[string]*platform.Platform),
 	}
 }
 
@@ -689,7 +689,7 @@ func (p *GlobalNodePool) RecordLatency(hash node.Hash, rawTarget string, latency
 // UpdateNodeEgressIP records an egress probe attempt and optionally updates
 // the node's egress IP and explicit region metadata.
 // Region update rules:
-//   - ip=nil,  loc=nil: keep both IP and region unchanged.
+//   - ip=nil,  loc=nil: keep both IP and region unchanged, but mark egress not ready.
 //   - ip!=nil, loc=nil: keep region if IP unchanged; clear region if IP changed.
 //   - loc!=nil: set region to loc (normalized).
 func (p *GlobalNodePool) UpdateNodeEgressIP(hash node.Hash, ip *netip.Addr, loc *string) {
@@ -703,6 +703,7 @@ func (p *GlobalNodePool) UpdateNodeEgressIP(hash node.Hash, ip *netip.Addr, loc 
 
 	oldIP := entry.GetEgressIP()
 	oldRegion := entry.GetEgressRegion()
+	wasReady := entry.IsEgressReady()
 	ipChanged := false
 
 	if ip != nil {
@@ -712,6 +713,11 @@ func (p *GlobalNodePool) UpdateNodeEgressIP(hash node.Hash, ip *netip.Addr, loc 
 			entry.SetEgressIP(*ip)
 			ipChanged = true
 		}
+		entry.SetEgressReady(ip.IsValid())
+	} else {
+		// Preserve last-known metadata for diagnostics, but it is no longer
+		// eligible for routing until a later egress probe succeeds.
+		entry.SetEgressReady(false)
 	}
 
 	regionChanged := false
@@ -731,7 +737,8 @@ func (p *GlobalNodePool) UpdateNodeEgressIP(hash node.Hash, ip *netip.Addr, loc 
 		}
 	}
 
-	if ipChanged || regionChanged {
+	readyChanged := wasReady != entry.IsEgressReady()
+	if ipChanged || regionChanged || readyChanged {
 		p.notifyAllPlatformsDirty(hash)
 	}
 	if p.onNodeDynamicChanged != nil {

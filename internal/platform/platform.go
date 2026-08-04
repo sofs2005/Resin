@@ -137,9 +137,8 @@ func (p *Platform) evaluateNode(
 		return false, false
 	}
 
-	// 3. Egress IP must be known.
-	egressIP := entry.GetEgressIP()
-	if !egressIP.IsValid() {
+	// 3. The latest egress probe must have produced a valid current IP.
+	if !entry.IsEgressReady() {
 		return false, false
 	}
 

@@ -17,6 +17,10 @@ const DEFAULT_CONFIG: RuntimeConfig = {
   max_egress_test_interval: "",
   latency_test_url: "",
   latency_authorities: [],
+  egress_trace_urls: [
+    "https://cloudflare.com/cdn-cgi/trace",
+    "https://www.cloudflare.com/cdn-cgi/trace",
+  ],
   p2c_latency_window: "",
   latency_decay_window: "",
   cache_flush_interval: "",
@@ -77,6 +81,9 @@ function normalizeRuntimeConfig(raw: Partial<RuntimeConfig> | null | undefined):
     latency_authorities: Array.isArray(raw.latency_authorities)
       ? raw.latency_authorities.filter((item): item is string => typeof item === "string")
       : DEFAULT_CONFIG.latency_authorities,
+    egress_trace_urls: Array.isArray(raw.egress_trace_urls)
+      ? raw.egress_trace_urls.filter((item): item is string => typeof item === "string")
+      : DEFAULT_CONFIG.egress_trace_urls,
     p2c_latency_window: asString(raw.p2c_latency_window, DEFAULT_CONFIG.p2c_latency_window),
     latency_decay_window: asString(raw.latency_decay_window, DEFAULT_CONFIG.latency_decay_window),
     cache_flush_interval: asString(raw.cache_flush_interval, DEFAULT_CONFIG.cache_flush_interval),

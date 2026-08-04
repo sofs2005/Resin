@@ -12,6 +12,7 @@ export type RuntimeConfig = {
   max_egress_test_interval: string;
   latency_test_url: string;
   latency_authorities: string[];
+  egress_trace_urls: string[];
   p2c_latency_window: string;
   latency_decay_window: string;
   cache_flush_interval: string;

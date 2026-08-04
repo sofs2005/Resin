@@ -52,6 +52,7 @@ type NodeEntry struct {
 	CircuitOpenSince atomic.Int64               // unix-nano; 0 = not open
 	egressIP         atomic.Pointer[netip.Addr] // nil before first store
 	egressRegion     atomic.Pointer[string]     // lowercase country code from probe trace; nil when unknown
+	egressReady      atomic.Bool                // true only after the latest egress probe succeeded
 	LastEgressUpdate atomic.Int64               // unix-nano of last successful egress-IP sample
 	// Probe-attempt timestamps (unix-nano). These are updated regardless of
 	// probe success/failure, and are used by probe schedulers.
@@ -249,13 +250,28 @@ func (e *NodeEntry) HasOutbound() bool {
 }
 
 // IsAvailable returns true when the node is usable for routing fallback:
-// outbound is ready and circuit is not open. Available nodes may still be
-// unproven (SuccessCount below the healthy threshold).
+// outbound is ready, the latest egress probe succeeded, and circuit is not open.
+// Available nodes may still be unproven (SuccessCount below the healthy threshold).
 func (e *NodeEntry) IsAvailable() bool {
 	if e == nil {
 		return false
 	}
-	return !e.IsCircuitOpen() && e.HasOutbound()
+	return !e.IsCircuitOpen() && e.HasOutbound() && e.IsEgressReady()
+}
+
+// IsEgressReady returns true only when the latest egress probe succeeded and
+// the node has a valid current egress IP.
+func (e *NodeEntry) IsEgressReady() bool {
+	return e != nil && e.egressReady.Load() && e.GetEgressIP().IsValid()
+}
+
+// SetEgressReady updates whether the latest egress probe produced a usable
+// current egress result.
+func (e *NodeEntry) SetEgressReady(ready bool) {
+	if e == nil {
+		return
+	}
+	e.egressReady.Store(ready)
 }
 
 // IsHealthy returns true when the node is stable-healthy for preferred
@@ -301,9 +317,11 @@ func (e *NodeEntry) GetEgressIP() netip.Addr {
 	return *ptr
 }
 
-// SetEgressIP stores the node's egress IP.
+// SetEgressIP stores the node's egress IP. A valid value represents a
+// successful current egress sample until a later failed probe clears readiness.
 func (e *NodeEntry) SetEgressIP(ip netip.Addr) {
 	e.egressIP.Store(&ip)
+	e.egressReady.Store(ip.IsValid())
 }
 
 // GetEgressRegion returns the node's stored region from probe metadata,

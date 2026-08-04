@@ -102,7 +102,7 @@ func TestHandleListNodes_UniqueEgressIPsUsesFilteredResult(t *testing.T) {
 	addNodeForNodeListTest(t, cp, subA, rawA4, "")
 	addNodeForNodeListTest(t, cp, subB, rawB1, "203.0.113.99")
 
-	// Healthy condition: has outbound + not circuit-open.
+	// Healthy condition: has outbound + current egress + not circuit-open.
 	markNodeHealthyForNodeListTest(t, cp, rawA1)
 	markNodeHealthyForNodeListTest(t, cp, rawA2)
 

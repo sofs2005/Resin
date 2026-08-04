@@ -254,7 +254,8 @@ No available proxy nodes
     * 具体索引实现：用 `xxh3(domain)` 的 64-bit key 做匹配，不再做碰撞校验。这是有意的内存/性能取舍，接受极低概率的 hash 碰撞，代价仅仅是节点随机路由的时候，延迟分数有极低的概率有误差。
     * 普通站点区的淘汰语义是“近似 LRU”而非严格 LRU：读取触摸有写节流（最小触摸间隔 100ms），短间隔高频读取不会每次都会刷新最近访问时间。
     * DomainLatencyStats 包含 Latency 与 LastUpdated 两个字段。
-	* EgressInfo：netip.Addr 类型，节点的出口 IP。
+	* EgressInfo：netip.Addr 类型，节点最近一次成功探测得到的出口 IP；探测失败时可保留为 last-known 诊断信息。
+	* EgressReady：最近一次出口探测是否成功并产生当前可路由的有效出口 IP。健康状态和 Platform 可路由视图都必须满足该条件。
 	* LastEgressUpdate：最后一次成功更新出口 IP 的时间戳。
 	* LastLatencyProbeAttempt：最后一次延迟探测尝试时间戳（主动/被动、成功/失败都会更新）。
 	* LastAuthorityLatencyProbeAttempt：最后一次权威域名延迟探测尝试时间戳（主动/被动、成功/失败都会更新）。
@@ -278,7 +279,7 @@ No available proxy nodes
 * 过滤条件：
     1. 节点状态正常（非 Circuit Break）。
     2. 调用 `NodeEntry.MatchTagFilter(Platform.RegexFilters, subLookup)` 判断 Tag 是否匹配。
-    3. 节点必须有出口 IP（无论 Platform 是否配置 `RegionFilters`）。
+    3. 节点最近一次出口探测成功且有有效出口 IP（无论 Platform 是否配置 `RegionFilters`）。
     4. 若 `RegionFilters` 非空，则节点出口 IP 地区必须符合 `RegionFilters`。
     5. 有至少一条延迟信息。
     6. Outbound 不为空
@@ -381,7 +382,7 @@ Platform 过滤时，通过 `NodeEntry.MatchTagFilter` 方法，反向查询 Ref
 全局节点池提供一组线程安全的健康管理接口，供被动反馈与主动探测调用。这些接口是系统维护节点状态的唯一入口。
 
 * `RecordResult(id NodeHash, success bool)`：提交节点的一次网络请求结果。
-	* `success=true`：重置连续失败计数 (`FailureCount = 0`)。若节点当前处于熔断状态，立即恢复（`清空 CircuitOpenSince`）。
+	* `success=true`：重置连续失败计数 (`FailureCount = 0`)。若节点当前处于熔断状态，立即恢复（`清空 CircuitOpenSince`）。但只有最近一次出口探测成功、`EgressReady=true` 时，节点才可进入健康/可路由集合。
 	* `success=false`：原子递增连续失败计数。若计数达到配置的阈值 (`MaxConsecutiveFailures`)，触发熔断（`CircuitOpenSince = 当前时间`）。
 * `RecordPassiveResult(platformID string, id NodeHash, success bool)`：提交来自用户代理流量的被动网络结果。若对应 Platform 开启 `passive_circuit_breaker_disabled`，则忽略失败结果，不增加连续失败计数；成功结果仍作为正向健康反馈处理。
 * `RecordLatency(id NodeHash, domain string, latency *Duration)`：提交节点对特定域名的延迟探测尝试。`latency=nil` 表示“仅记录本次探测尝试，不写延迟样本”；`latency!=nil` 时按 TD-EWMA 更新延迟统计。无论 `latency` 是否为空，都会更新 `LastLatencyProbeAttempt`，若域名属于 `LatencyAuthorities` 还会更新 `LastAuthorityLatencyProbeAttempt`。如果调用本次 `RecordLatency` 之前，节点的 `LatencyTable` 为空，需要通知各 Platform 重新过滤这个节点。
@@ -393,7 +394,7 @@ Resin 使用计数器熔断机制保护系统稳定性。
 * 熔断触发：仅由 `RecordResult(id, false)` 触发。当连续失败次数 >= 阈值时，节点进入熔断状态。熔断的节点会立即从所有 Platform 的可路由视图中移除，不再承载用户流量。
 	* 用户代理流量通过 `RecordPassiveResult(platformID, id, false)` 上报失败；当对应 Platform 开启 `passive_circuit_breaker_disabled` 时，这类失败不会触发熔断。
 	* 主动探测仍直接使用 `RecordResult(id, false)`，不受 Platform 的 `passive_circuit_breaker_disabled` 影响。
-* 熔断恢复：熔断后的节点依然保留在全局池中，接受 ProbeManager 的主动探测。一旦 `RecordResult(id, true)` 被调用（通常由主动探测触发），节点立即恢复，重新加入可路由视图。
+* 熔断恢复：熔断后的节点依然保留在全局池中，接受 ProbeManager 的主动出口探测。一旦出口探测成功并同时完成 `RecordResult(id, true)`，节点才会恢复并重新加入可路由视图。
 * 熔断逻辑由全局代理池管理。禁止其他模块直接修改节点的熔断状态。
 
 ### 延迟统计 (TD-EWMA)
@@ -409,11 +410,10 @@ Resin 使用计数器熔断机制保护系统稳定性。
 * 目标：全局节点池所有节点。
 * 职责：定期刷新节点的出口 IP 与地区信息，确保路由策略（如同 IP 关联、地区过滤）的准确性。
 * 探测时机与调度策略：每隔 13～17 秒全局扫描一次。调度依据是 `LastEgressUpdateAttempt`：对未来 15 秒内将会或者已经超过 `MaxEgressTestInterval` 的节点进行探测。另外，新的节点加入全局节点池时，需要立即进行一次出口探测。
-* 探测动作：通过节点请求 `https://cloudflare.com/cdn-cgi/trace` (GET)。
-* 结果处理：
-	* 记录本次网络请求的结果。调用 `RecordResult(id, true/false)`。
-  * 如果成功，作为副作用，会更新对 Cloudflare 的延迟统计，调用 `RecordLatency(id, "cloudflare.com", &latency)`。
-	* 无论成功或失败，都会调用 `UpdateNodeEgressIP` 记录尝试时间；成功时携带解析后的 `ip`，失败时传 `nil`。
+* 探测动作：按运行时配置的 URL 顺序发起 HTTP GET；默认使用 `https://cloudflare.com/cdn-cgi/trace`，失败后尝试 `https://www.cloudflare.com/cdn-cgi/trace`。
+* 结果处理：一次逻辑出口探测任务内，首个返回可解析 `ip=` 的地址即为成功；所有地址失败才调用一次 `RecordResult(id, false)`。
+	* 成功时调用 `RecordResult(id, true)`，并作为副作用更新对 Cloudflare 的延迟统计、出口 IP/地区和 `EgressReady`。
+	* 失败时保留 last-known 出口 IP/地区用于诊断，但撤销 `EgressReady`，使节点立即从 Platform 可路由视图移除。
 
 #### 主动延迟探测
 * 目标：全局节点池所有节点。
@@ -1073,6 +1073,7 @@ Resin 需要做实事与历史的统计数据，用于 Dashboard 展示。
   "max_egress_test_interval": "1h",
   "latency_test_url": "https://www.gstatic.com/generate_204",
   "latency_authorities": ["gstatic.com", "google.com", "cloudflare.com", "github.com"],
+  "egress_trace_urls": ["https://cloudflare.com/cdn-cgi/trace", "https://www.cloudflare.com/cdn-cgi/trace"],
   "p2c_latency_window": "10m",
   "latency_decay_window": "10m",
   "cache_flush_interval": "5m",
@@ -1100,6 +1101,7 @@ Resin 需要做实事与历史的统计数据，用于 Dashboard 展示。
   "max_egress_test_interval": "1h",
   "latency_test_url": "https://www.gstatic.com/generate_204",
   "latency_authorities": ["gstatic.com", "google.com", "cloudflare.com", "github.com"],
+  "egress_trace_urls": ["https://cloudflare.com/cdn-cgi/trace", "https://www.cloudflare.com/cdn-cgi/trace"],
   "p2c_latency_window": "10m",
   "latency_decay_window": "10m",
   "cache_flush_interval": "5m",

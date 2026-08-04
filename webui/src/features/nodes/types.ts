@@ -15,6 +15,7 @@ export type NodeSummary = {
   failure_count: number;
   success_count: number;
   health_status: "healthy" | "available" | "unhealthy";
+  egress_ready: boolean;
   egress_ip?: string;
   reference_latency_ms?: number;
   region?: string;

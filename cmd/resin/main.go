@@ -99,6 +99,9 @@ func normalizeRuntimeConfig(cfg *config.RuntimeConfig) {
 	if cfg.MinConsecutiveSuccesses < 1 {
 		cfg.MinConsecutiveSuccesses = config.NewDefaultRuntimeConfig().MinConsecutiveSuccesses
 	}
+	if len(cfg.EgressTraceURLs) == 0 {
+		cfg.EgressTraceURLs = config.DefaultEgressTraceURLs()
+	}
 }
 
 func newDirectDownloader(
@@ -266,9 +269,7 @@ func newTopologyRuntime(
 	probeMgr := probe.NewProbeManager(probe.ProbeConfig{
 		Pool:        pool,
 		Concurrency: envCfg.ProbeConcurrency,
-		Fetcher: func(hash node.Hash, url string) ([]byte, time.Duration, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), envCfg.ProbeTimeout)
-			defer cancel()
+		FetcherWithContext: func(ctx context.Context, hash node.Hash, url string) ([]byte, time.Duration, error) {
 			entry, ok := pool.GetEntry(hash)
 			if !ok {
 				return nil, 0, fmt.Errorf("node not found")
@@ -285,6 +286,12 @@ func newTopologyRuntime(
 					}
 				},
 			})
+		},
+		EgressTraceURLs: func() []string {
+			return append([]string(nil), runtimeConfigSnapshot(runtimeCfg).EgressTraceURLs...)
+		},
+		ProbeTimeout: func() time.Duration {
+			return envCfg.ProbeTimeout
 		},
 		MaxEgressTestInterval: func() time.Duration {
 			return time.Duration(runtimeConfigSnapshot(runtimeCfg).MaxEgressTestInterval)
@@ -858,13 +865,16 @@ func restoreBootstrapNodeDynamics(
 		entry.LastLatencyProbeAttempt.Store(nd.LastLatencyProbeAttemptNs)
 		entry.LastAuthorityLatencyProbeAttempt.Store(nd.LastAuthorityLatencyProbeAttemptNs)
 		entry.LastEgressUpdateAttempt.Store(nd.LastEgressUpdateAttemptNs)
+		egressReady := false
 		if nd.EgressIP != "" {
 			if ip, err := netip.ParseAddr(nd.EgressIP); err == nil {
 				entry.SetEgressIP(ip)
+				egressReady = nd.EgressUpdatedAtNs > 0 && nd.EgressUpdatedAtNs >= nd.LastEgressUpdateAttemptNs
 			}
 		}
 		entry.SetEgressRegion(nd.EgressRegion)
 		entry.LastEgressUpdate.Store(nd.EgressUpdatedAtNs)
+		entry.SetEgressReady(egressReady)
 	}
 	log.Printf("Loaded %d node dynamic states from cache.db", len(dynamics))
 	return nil

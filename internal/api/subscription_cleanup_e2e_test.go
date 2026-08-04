@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -61,6 +62,7 @@ func TestAPIContract_SubscriptionCleanupAction_E2E(t *testing.T) {
 	}
 	outbound := testutil.NewNoopOutbound()
 	healthyEntry.Outbound.Store(&outbound)
+	healthyEntry.SetEgressIP(netip.MustParseAddr("203.0.113.10"))
 	healthyEntry.CircuitOpenSince.Store(0)
 	healthyEntry.SuccessCount.Store(3)
 

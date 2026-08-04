@@ -613,6 +613,7 @@ func TestPool_MakeHealthyAndEnabledEvaluator_ExcludesDisabledNodes(t *testing.T)
 	}
 	healthyOutbound := testutil.NewNoopOutbound()
 	healthyEntry.Outbound.Store(&healthyOutbound)
+	healthyEntry.SetEgressIP(netip.MustParseAddr("203.0.113.10"))
 	healthyEntry.SuccessCount.Store(3)
 	pool.RecordResult(healthyHash, true)
 

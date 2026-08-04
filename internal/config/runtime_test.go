@@ -21,6 +21,9 @@ func TestNewDefaultRuntimeConfig(t *testing.T) {
 	if len(cfg.LatencyAuthorities) != 4 {
 		t.Errorf("LatencyAuthorities: got %d items, want 4", len(cfg.LatencyAuthorities))
 	}
+	if got := cfg.EgressTraceURLs; len(got) != 2 || got[0] != DefaultEgressTraceURL || got[1] != DefaultEgressBackupURL {
+		t.Errorf("EgressTraceURLs: got %v", got)
+	}
 }
 
 func TestRuntimeConfig_JSONRoundTrip(t *testing.T) {
@@ -101,6 +104,7 @@ func TestRuntimeConfig_JSONFieldNames(t *testing.T) {
 		"max_egress_test_interval",
 		"latency_test_url",
 		"latency_authorities",
+		"egress_trace_urls",
 		"p2c_latency_window",
 		"latency_decay_window",
 		"cache_flush_interval",

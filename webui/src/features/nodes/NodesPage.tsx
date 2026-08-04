@@ -553,7 +553,8 @@ export function NodesPage() {
         </button>
       ),
       cell: (info) => {
-        const val = regionToFlag(info.getValue());
+        const node = info.row.original;
+        const val = node.egress_ready ? regionToFlag(info.getValue()) : "-";
         return (
           <div style={{ maxWidth: "100px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={val}>
             {val}
@@ -569,7 +570,8 @@ export function NodesPage() {
         </button>
       ),
       cell: (info) => {
-        const val = info.getValue() || "-";
+        const node = info.row.original;
+        const val = node.egress_ready ? info.getValue() || "-" : "-";
         return (
           <div style={{ maxWidth: "100px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={val}>
             {val}
@@ -947,7 +949,9 @@ export function NodesPage() {
                   <div>
                     <span>{t("出口 / 区域")}</span>
                     <p>
-                      {detailNode.egress_ip || "-"} / {regionToFlag(detailNode.region)}
+                      {detailNode.egress_ready
+                        ? `${detailNode.egress_ip || "-"} / ${regionToFlag(detailNode.region)}`
+                        : "-"}
                     </p>
                   </div>
                   <div>

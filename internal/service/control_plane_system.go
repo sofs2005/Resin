@@ -86,6 +86,7 @@ var runtimeConfigAllowedFields = map[string]bool{
 	"max_egress_test_interval":                 true,
 	"latency_test_url":                         true,
 	"latency_authorities":                      true,
+	"egress_trace_urls":                        true,
 	"p2c_latency_window":                       true,
 	"latency_decay_window":                     true,
 	"cache_flush_interval":                     true,
@@ -146,6 +147,10 @@ func copyRuntimeConfig(cfg *config.RuntimeConfig) *config.RuntimeConfig {
 	}
 	out := *cfg
 	out.LatencyAuthorities = append([]string(nil), cfg.LatencyAuthorities...)
+	out.EgressTraceURLs = append([]string(nil), cfg.EgressTraceURLs...)
+	if len(out.EgressTraceURLs) == 0 {
+		out.EgressTraceURLs = config.DefaultEgressTraceURLs()
+	}
 	return &out
 }
 
@@ -208,6 +213,34 @@ func validateRuntimeConfig(cfg *config.RuntimeConfig) *ServiceError {
 		return verr
 	}
 	latencyDomain := strings.ToLower(netutil.ExtractDomain(u.Host))
+	if len(cfg.EgressTraceURLs) == 0 {
+		return invalidArg("egress_trace_urls: must contain at least one URL")
+	}
+	if len(cfg.EgressTraceURLs) > 8 {
+		return invalidArg("egress_trace_urls: must contain at most 8 URLs")
+	}
+	egressURLs := make([]string, 0, len(cfg.EgressTraceURLs))
+	seenEgressURLs := make(map[string]struct{}, len(cfg.EgressTraceURLs))
+	for i, rawURL := range cfg.EgressTraceURLs {
+		field := fmt.Sprintf("egress_trace_urls[%d]", i)
+		egressURL := strings.TrimSpace(rawURL)
+		egressParsed, egressErr := parseHTTPAbsoluteURL(field, egressURL)
+		if egressErr != nil {
+			return egressErr
+		}
+		if egressParsed.Host == "" {
+			return invalidArg(fmt.Sprintf("%s: must include a host", field))
+		}
+		if _, exists := seenEgressURLs[egressURL]; exists {
+			continue
+		}
+		seenEgressURLs[egressURL] = struct{}{}
+		egressURLs = append(egressURLs, egressURL)
+	}
+	if len(egressURLs) == 0 {
+		return invalidArg("egress_trace_urls: must contain at least one URL")
+	}
+	cfg.EgressTraceURLs = egressURLs
 	if cfg.MaxConsecutiveFailures < 0 {
 		return invalidArg("max_consecutive_failures: must be non-negative")
 	}

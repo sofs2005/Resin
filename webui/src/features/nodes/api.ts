@@ -12,6 +12,7 @@ const basePath = "/api/v1/nodes";
 type ApiNodeSummary = Omit<NodeSummary, "tags"> & {
   tags?: NodeSummary["tags"] | null;
   enabled?: boolean | null;
+  egress_ready?: boolean | null;
   display_tag?: string | null;
   last_error?: string | null;
   circuit_open_since?: string | null;
@@ -36,6 +37,7 @@ function normalizeNode(raw: ApiNodeSummary): NodeSummary {
     failure_count: raw.failure_count ?? 0,
     success_count: raw.success_count ?? 0,
     health_status: raw.health_status || "unhealthy",
+    egress_ready: raw.egress_ready === true,
     egress_ip: raw.egress_ip || "",
     region: raw.region || "",
     last_egress_update: raw.last_egress_update || "",

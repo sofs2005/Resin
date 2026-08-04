@@ -2,6 +2,15 @@ package config
 
 import "time"
 
+const (
+	DefaultEgressTraceURL  = "https://cloudflare.com/cdn-cgi/trace"
+	DefaultEgressBackupURL = "https://www.cloudflare.com/cdn-cgi/trace"
+)
+
+func DefaultEgressTraceURLs() []string {
+	return []string{DefaultEgressTraceURL, DefaultEgressBackupURL}
+}
+
 // RuntimeConfig holds all hot-updatable global settings.
 // These are persisted in the database and served via GET /system/config.
 type RuntimeConfig struct {
@@ -14,7 +23,7 @@ type RuntimeConfig struct {
 	ReverseProxyLogRespBodyMaxBytes    int  `json:"reverse_proxy_log_resp_body_max_bytes"`
 
 	// Health check
-	MaxConsecutiveFailures          int      `json:"max_consecutive_failures"`
+	MaxConsecutiveFailures int `json:"max_consecutive_failures"`
 	// MinConsecutiveSuccesses is the number of consecutive successful probes
 	// required before a node is considered healthy/stable. Nodes that pass
 	// fewer checks remain available (routable fallback) but not healthy.
@@ -26,6 +35,7 @@ type RuntimeConfig struct {
 	// Probe
 	LatencyTestURL     string   `json:"latency_test_url"`
 	LatencyAuthorities []string `json:"latency_authorities"`
+	EgressTraceURLs    []string `json:"egress_trace_urls"`
 
 	// P2C
 	P2CLatencyWindow   Duration `json:"p2c_latency_window"`
@@ -56,6 +66,7 @@ func NewDefaultRuntimeConfig() *RuntimeConfig {
 
 		LatencyTestURL:     "https://www.gstatic.com/generate_204",
 		LatencyAuthorities: []string{"gstatic.com", "google.com", "cloudflare.com", "github.com"},
+		EgressTraceURLs:    DefaultEgressTraceURLs(),
 
 		P2CLatencyWindow:   Duration(10 * time.Minute),
 		LatencyDecayWindow: Duration(10 * time.Minute),

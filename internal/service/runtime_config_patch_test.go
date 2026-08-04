@@ -61,6 +61,7 @@ func cloneRuntimeConfig(cfg *config.RuntimeConfig) *config.RuntimeConfig {
 	}
 	out := *cfg
 	out.LatencyAuthorities = append([]string(nil), cfg.LatencyAuthorities...)
+	out.EgressTraceURLs = append([]string(nil), cfg.EgressTraceURLs...)
 	return &out
 }
 
@@ -135,6 +136,30 @@ func TestPatchRuntimeConfig_HotUpdatePersistsAndSurvivesRestart(t *testing.T) {
 		time.Duration(afterRestart.P2CLatencyWindow) != 7*time.Minute ||
 		time.Duration(afterRestart.CacheFlushInterval) != 30*time.Second {
 		t.Fatalf("restart did not preserve patched config: %+v", afterRestart)
+	}
+}
+
+func TestPatchRuntimeConfig_EgressTraceURLsValidateAndPersist(t *testing.T) {
+	h := newPatchHarness(t)
+
+	updated, err := h.cp.PatchRuntimeConfig([]byte(`{"egress_trace_urls":[" https://backup.example/trace ","https://primary.example/trace","https://backup.example/trace"]}`))
+	if err != nil {
+		t.Fatalf("PatchRuntimeConfig: %v", err)
+	}
+	want := []string{"https://backup.example/trace", "https://primary.example/trace"}
+	if !reflect.DeepEqual(updated.EgressTraceURLs, want) {
+		t.Fatalf("egress_trace_urls = %v, want %v", updated.EgressTraceURLs, want)
+	}
+	persisted, _, err := h.engine.GetSystemConfig()
+	if err != nil {
+		t.Fatalf("GetSystemConfig: %v", err)
+	}
+	if !reflect.DeepEqual(persisted.EgressTraceURLs, want) {
+		t.Fatalf("persisted egress_trace_urls = %v, want %v", persisted.EgressTraceURLs, want)
+	}
+
+	if _, err := h.cp.PatchRuntimeConfig([]byte(`{"egress_trace_urls":[]}`)); err == nil {
+		t.Fatal("expected empty egress_trace_urls to be rejected")
 	}
 }
 
