@@ -323,7 +323,7 @@ RESIN_PORT=2260
 <details>
 <summary><b>方式二：通过源码编译</b></summary>
 <br>
-前提条件：请确保环境中已安装 Go 1.25+ 和 Node.js。
+前提条件：请确保环境中已安装 Go 1.26.10 和 Node.js。
 
 ```bash
 # 1. 下载 Resin 源码

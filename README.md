@@ -337,7 +337,7 @@ RESIN_PORT=2260
 <details>
 <summary><b>Option 2: Build from source</b></summary>
 <br>
-Prerequisites: Go 1.25+ and Node.js installed.
+Prerequisites: Go 1.26.10 and Node.js installed.
 
 ```bash
 # 1. Clone Resin source

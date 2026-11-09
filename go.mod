@@ -1,19 +1,21 @@
 module github.com/Resinat/Resin
 
-go 1.25.5
+go 1.26.10
 
 require (
+	github.com/anytls/sing-anytls v0.0.13
 	github.com/ccojocar/zxcvbn-go v1.0.4
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
+	github.com/miekg/dns v1.1.67
 	github.com/oschwald/maxminddb-golang v1.13.1
 	github.com/puzpuzpuz/xsync/v4 v4.4.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/sagernet/sing v0.7.18
 	github.com/sagernet/sing-box v1.12.21
 	github.com/zeebo/xxh3 v1.0.2
-	golang.org/x/net v0.50.0
+	golang.org/x/net v0.60.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.45.0
 )
@@ -24,7 +26,6 @@ require (
 	github.com/akutz/memconn v0.1.0 // indirect
 	github.com/alexbrainman/sspi v0.0.0-20231016080023-1a75b4708caa // indirect
 	github.com/andybalholm/brotli v1.1.0 // indirect
-	github.com/anytls/sing-anytls v0.0.11 // indirect
 	github.com/bits-and-blooms/bitset v1.13.0 // indirect
 	github.com/caddyserver/certmagic v0.23.0 // indirect
 	github.com/caddyserver/zerossl v0.1.3 // indirect
@@ -33,12 +34,10 @@ require (
 	github.com/cretz/bine v0.2.0 // indirect
 	github.com/dblohm7/wingoes v0.0.0-20240119213807-a09d6be7affa // indirect
 	github.com/digitalocean/go-smbios v0.0.0-20180907143718-390a4f403a8e // indirect
-	github.com/dolthub/maphash v0.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.7.0 // indirect
 	github.com/gaissmai/bart v0.11.1 // indirect
-	github.com/gammazero/deque v0.2.1 // indirect
 	github.com/go-chi/chi/v5 v5.2.2 // indirect
 	github.com/go-chi/render v1.0.3 // indirect
 	github.com/go-json-experiment/json v0.0.0-20250103232110-6a9a0fde9288 // indirect
@@ -73,7 +72,6 @@ require (
 	github.com/metacubex/tfo-go v0.0.0-20250921095601-b102db4216c0 // indirect
 	github.com/metacubex/utls v1.8.4 // indirect
 	github.com/mholt/acmez/v3 v3.1.2 // indirect
-	github.com/miekg/dns v1.1.67 // indirect
 	github.com/mitchellh/go-ps v1.0.0 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
@@ -116,20 +114,20 @@ require (
 	go.uber.org/zap/exp v0.3.0 // indirect
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
-	golang.org/x/crypto v0.48.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
-	golang.org/x/mod v0.32.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/term v0.40.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/mod v0.41.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/term v0.46.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
-	golang.org/x/tools v0.41.0 // indirect
+	golang.org/x/tools v0.49.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20250818200422-3122310a409c // indirect
-	google.golang.org/grpc v1.74.2 // indirect
-	google.golang.org/protobuf v1.36.7 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
+	google.golang.org/grpc v1.83.2 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 	lukechampine.com/blake3 v1.3.0 // indirect
 	modernc.org/libc v1.67.6 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

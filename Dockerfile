@@ -12,8 +12,10 @@ COPY webui/ ./
 RUN npm run build
 
 # Cross-compile Go on the native builder platform for each TARGETARCH.
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine AS go-builder
 WORKDIR /src
+
+RUN apk add --no-cache git
 
 COPY go.mod go.sum ./
 RUN go mod download
@@ -23,8 +25,8 @@ COPY --from=web-builder /src/webui/dist ./webui/dist
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
-ARG VERSION=dev
-ARG GIT_COMMIT=unknown
+ARG VERSION
+ARG GIT_COMMIT
 ARG BUILD_TIME=unknown
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \

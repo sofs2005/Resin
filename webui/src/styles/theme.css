@@ -1235,6 +1235,8 @@ a {
 
 .trend-tooltip {
   min-width: 140px;
+  color: #425471;
+  font-size: 11px;
   padding: 9px 11px;
   border-radius: 10px;
   border: 1px solid rgba(37, 72, 120, 0.2);
@@ -1245,8 +1247,12 @@ a {
 
 .trend-tooltip-time {
   margin: 0 0 6px;
+}
+
+.trend-tooltip-time,
+.trend-tooltip-table thead th,
+.trend-tooltip-table thead td {
   color: #5d6f8d;
-  font-size: 11px;
   font-weight: 600;
 }
 
@@ -1262,26 +1268,69 @@ a {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  color: #425471;
-  font-size: 11px;
 }
 
-.trend-tooltip-row span {
+.trend-tooltip-row span,
+.trend-tooltip-series {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  font-weight: 400;
 }
 
-.trend-tooltip-row i {
+.trend-tooltip-row i,
+.trend-tooltip-series i {
   width: 8px;
   height: 8px;
   border-radius: 999px;
   display: inline-flex;
+  flex-shrink: 0;
 }
 
-.trend-tooltip-row b {
+.trend-tooltip-row b,
+.trend-tooltip-table tbody td {
   color: #163f78;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-tooltip-table {
+  width: 100%;
+  border-collapse: collapse;
+  font: inherit;
+  white-space: nowrap;
+}
+
+.trend-tooltip-table th,
+.trend-tooltip-table td {
+  padding: 4px 0 4px 14px;
+  text-align: right;
+  vertical-align: middle;
+}
+
+.trend-tooltip-table th:first-child,
+.trend-tooltip-table td:first-child {
+  padding-left: 0;
+  text-align: left;
+}
+
+.trend-tooltip-table thead th,
+.trend-tooltip-table thead td {
+  padding-top: 0;
+  padding-bottom: 2px;
+}
+
+.trend-tooltip-table-compact th,
+.trend-tooltip-table-compact td {
+  padding: 0 0 4px 10px;
+}
+
+.trend-tooltip-table-compact thead td {
+  padding-bottom: 6px;
+}
+
+.trend-tooltip-table-compact tbody tr:last-child > * {
+  padding-bottom: 0;
 }
 
 .dashboard-summary-inline {
