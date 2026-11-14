@@ -3,6 +3,7 @@ package state
 import (
 	"fmt"
 	"log"
+	"sync/atomic"
 
 	"github.com/Resinat/Resin/internal/model"
 )
@@ -31,9 +32,20 @@ type CacheReaders struct {
 // Strong-persist data (config, platforms, subscriptions, rules) goes through
 // transactional writes to state.db. Weak-persist data (nodes, leases) is
 // marked dirty and batch-flushed to cache.db.
+//
+// When persistEnabled is false (RESIN_CACHE_PERSIST=off, the default) the weak
+// persist layer is disabled entirely: every Mark* call becomes a no-op and the
+// dirty sets never grow, so cache.db is never written and the process idles at
+// zero steady-state disk writes for topology data. Strong-persist writes
+// (state.db) are unaffected because they are not routed through the dirty sets.
 type StateEngine struct {
 	*StateRepo
 	*CacheRepo
+
+	// persistEnabled gates the weak-persist (cache.db) write path. It defaults
+	// to enabled so existing embedders keep the documented behaviour; the
+	// runtime disables it explicitly when cache persistence is off.
+	persistEnabled atomic.Bool
 
 	dirtyNodesStatic       *DirtySet[string]
 	dirtyNodesDynamic      *DirtySet[string]
@@ -44,7 +56,7 @@ type StateEngine struct {
 
 // newStateEngine creates a StateEngine with the given repos.
 func newStateEngine(stateRepo *StateRepo, cacheRepo *CacheRepo) *StateEngine {
-	return &StateEngine{
+	e := &StateEngine{
 		StateRepo:              stateRepo,
 		CacheRepo:              cacheRepo,
 		dirtyNodesStatic:       NewDirtySet[string](),
@@ -53,33 +65,93 @@ func newStateEngine(stateRepo *StateRepo, cacheRepo *CacheRepo) *StateEngine {
 		dirtyLeases:            NewDirtySet[LeaseDirtyKey](),
 		dirtySubscriptionNodes: NewDirtySet[SubscriptionNodeDirtyKey](),
 	}
+	e.persistEnabled.Store(true)
+	return e
+}
+
+// SetPersistEnabled enables or disables the weak-persist (cache.db) write path.
+// Disabling it is one-way safe: already-queued dirty keys stay in the sets until
+// the next flush but no new key is ever added. Callers should disable it before
+// any Mark* call happens (i.e. right after bootstrap) and must not start the
+// CacheFlushWorker afterwards.
+func (e *StateEngine) SetPersistEnabled(enabled bool) {
+	e.persistEnabled.Store(enabled)
+}
+
+// PersistEnabled reports whether weak-persist writes to cache.db are enabled.
+func (e *StateEngine) PersistEnabled() bool {
+	return e.persistEnabled.Load()
 }
 
 // --- Weak-persist methods (dirty-mark only) ---
 
-func (e *StateEngine) MarkNodeStatic(hash string)        { e.dirtyNodesStatic.MarkUpsert(hash) }
-func (e *StateEngine) MarkNodeStaticDelete(hash string)  { e.dirtyNodesStatic.MarkDelete(hash) }
-func (e *StateEngine) MarkNodeDynamic(hash string)       { e.dirtyNodesDynamic.MarkUpsert(hash) }
-func (e *StateEngine) MarkNodeDynamicDelete(hash string) { e.dirtyNodesDynamic.MarkDelete(hash) }
+func (e *StateEngine) MarkNodeStatic(hash string) {
+	if !e.persistEnabled.Load() {
+		return
+	}
+	e.dirtyNodesStatic.MarkUpsert(hash)
+}
+
+func (e *StateEngine) MarkNodeStaticDelete(hash string) {
+	if !e.persistEnabled.Load() {
+		return
+	}
+	e.dirtyNodesStatic.MarkDelete(hash)
+}
+
+func (e *StateEngine) MarkNodeDynamic(hash string) {
+	if !e.persistEnabled.Load() {
+		return
+	}
+	e.dirtyNodesDynamic.MarkUpsert(hash)
+}
+
+func (e *StateEngine) MarkNodeDynamicDelete(hash string) {
+	if !e.persistEnabled.Load() {
+		return
+	}
+	e.dirtyNodesDynamic.MarkDelete(hash)
+}
 
 func (e *StateEngine) MarkNodeLatency(nodeHash, domain string) {
+	if !e.persistEnabled.Load() {
+		return
+	}
 	e.dirtyNodeLatency.MarkUpsert(NodeLatencyDirtyKey{NodeHash: nodeHash, Domain: domain})
 }
+
 func (e *StateEngine) MarkNodeLatencyDelete(nodeHash, domain string) {
+	if !e.persistEnabled.Load() {
+		return
+	}
 	e.dirtyNodeLatency.MarkDelete(NodeLatencyDirtyKey{NodeHash: nodeHash, Domain: domain})
 }
 
 func (e *StateEngine) MarkLease(platformID, account string) {
+	if !e.persistEnabled.Load() {
+		return
+	}
 	e.dirtyLeases.MarkUpsert(LeaseDirtyKey{PlatformID: platformID, Account: account})
 }
+
 func (e *StateEngine) MarkLeaseDelete(platformID, account string) {
+	if !e.persistEnabled.Load() {
+		return
+	}
 	e.dirtyLeases.MarkDelete(LeaseDirtyKey{PlatformID: platformID, Account: account})
 }
 
 func (e *StateEngine) MarkSubscriptionNode(subID, nodeHash string) {
+	if !e.persistEnabled.Load() {
+		return
+	}
 	e.dirtySubscriptionNodes.MarkUpsert(SubscriptionNodeDirtyKey{SubscriptionID: subID, NodeHash: nodeHash})
 }
+
 func (e *StateEngine) MarkSubscriptionNodeDelete(subID, nodeHash string) {
+	if !e.persistEnabled.Load() {
+		return
+	}
 	e.dirtySubscriptionNodes.MarkDelete(SubscriptionNodeDirtyKey{SubscriptionID: subID, NodeHash: nodeHash})
 }
 

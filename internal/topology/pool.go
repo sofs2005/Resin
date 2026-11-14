@@ -543,7 +543,17 @@ func (p *GlobalNodePool) RangeNodes(fn func(node.Hash, *node.NodeEntry) bool) {
 // On failure, clears SuccessCount (immediate demotion from healthy to available),
 // increments FailureCount, and opens circuit-breaker if failure threshold reached.
 // Notifies platforms when circuit state or healthy-tier membership may change.
-// Fires OnNodeDynamicChanged only when dynamic fields actually change.
+//
+// Persistence gating: OnNodeDynamicChanged is fired only on state *crossings*,
+// not on every result. Persisting every result rewrote one nodes_dynamic row per
+// probe per node (≈47k rows per probe cycle on a large pool), which dominated
+// disk writes while carrying no routing information.
+//
+// Semantic cost: the persisted failure_count/success_count lag behind memory
+// (only crossing points are written), so a restart may resume a streak from a
+// stale value. The two values that drive decisions — circuit_open_since and the
+// healthy/available distinction, which is derived from success_count >=
+// min_consecutive_successes — remain accurate at every persisted crossing.
 func (p *GlobalNodePool) RecordResult(hash node.Hash, success bool) {
 	entry, ok := p.nodes.Load(hash)
 	if !ok {
@@ -557,21 +567,31 @@ func (p *GlobalNodePool) RecordResult(hash node.Hash, success bool) {
 
 	if success {
 		if entry.FailureCount.Swap(0) != 0 {
+			// Crossing: the failing streak ended.
 			dynamicChanged = true
 		}
 		if entry.CircuitOpenSince.Swap(0) != 0 {
+			// Crossing: circuit re-closed.
 			dynamicChanged = true
 			viewStateChanged = true
 		}
 		newSuccess := entry.SuccessCount.Add(1)
-		dynamicChanged = true
-		// Crossing into healthy needs healthy-set refresh.
+		if newSuccess == 1 {
+			// Crossing: a new success streak started. Persisted so that a
+			// restart can rebuild the streak instead of restarting at zero.
+			dynamicChanged = true
+		}
+		// Crossing into healthy needs healthy-set refresh. Kept as a separate
+		// check (not an else-if) so min_consecutive_successes == 1 still
+		// triggers the view refresh on the very first success.
 		if int(newSuccess) == minSuccesses {
+			dynamicChanged = true
 			viewStateChanged = true
 		}
 	} else {
 		oldSuccess := entry.SuccessCount.Swap(0)
-		if oldSuccess != 0 {
+		if int(oldSuccess) >= minSuccesses {
+			// Crossing: node left the healthy tier.
 			dynamicChanged = true
 		}
 		// Immediate demotion from healthy to available.
@@ -579,11 +599,16 @@ func (p *GlobalNodePool) RecordResult(hash node.Hash, success bool) {
 			viewStateChanged = true
 		}
 		newCount := entry.FailureCount.Add(1)
-		dynamicChanged = true
+		if newCount == 1 {
+			// Crossing: the node entered a failing streak.
+			dynamicChanged = true
+		}
 		maxConsecutiveFailures := p.currentMaxConsecutiveFailures()
 		if maxConsecutiveFailures > 0 && int(newCount) >= maxConsecutiveFailures {
 			// Open circuit if not already open.
 			if entry.CircuitOpenSince.CompareAndSwap(0, time.Now().UnixNano()) {
+				// Crossing: circuit opened.
+				dynamicChanged = true
 				viewStateChanged = true
 			}
 		}
@@ -638,9 +663,30 @@ func (p *GlobalNodePool) CurrentMinConsecutiveSuccesses() int {
 	return p.currentMinConsecutiveSuccesses()
 }
 
+// latencyPersistChangeRatio is the relative EWMA change (|new-old|/old) above
+// which a latency sample is considered material and written to node_latency.
+// Rationale: node_latency held ~30k rows and the probe cycle rewrote nearly all
+// of them; sub-25% drift is noise for P2C routing and stays in memory until a
+// later sample crosses the threshold.
+const latencyPersistChangeRatio = 0.25
+
 // RecordLatency records a latency probe attempt for the given node and raw target.
 // rawTarget is normalized through ExtractDomain (eTLD+1). latency may be nil,
 // which means "attempt only" without latency sample writeback.
+//
+// Persistence gating:
+//   - The probe-attempt timestamps (last_latency_probe_attempt_ns and
+//     last_authority_latency_probe_attempt_ns) are kept in memory only. Writing
+//     them back rewrote one nodes_dynamic row per probe per node, i.e. the whole
+//     table every probe cycle, while nothing reads them for routing decisions.
+//     Known side effect: after a restart every node looks unprobed and is
+//     scanned once immediately (bounded by the probe scan batch limit).
+//   - OnNodeLatencyChanged fires only when the sample is new, materially
+//     different (see latencyPersistChangeRatio), or a domain entry gets evicted
+//     (an eviction must be persisted as a delete).
+//   - A nil sample (probe failure) does not touch the latency table, so there is
+//     nothing to persist: the previous sample survives, exactly as before this
+//     change.
 func (p *GlobalNodePool) RecordLatency(hash node.Hash, rawTarget string, latency *time.Duration) {
 	entry, ok := p.nodes.Load(hash)
 	if !ok {
@@ -653,9 +699,6 @@ func (p *GlobalNodePool) RecordLatency(hash node.Hash, rawTarget string, latency
 	entry.LastLatencyProbeAttempt.Store(nowNs)
 	if isAuthority {
 		entry.LastAuthorityLatencyProbeAttempt.Store(nowNs)
-	}
-	if p.onNodeDynamicChanged != nil {
-		p.onNodeDynamicChanged(hash)
 	}
 
 	if latency == nil || *latency <= 0 || entry.LatencyTable == nil {
@@ -670,6 +713,9 @@ func (p *GlobalNodePool) RecordLatency(hash node.Hash, rawTarget string, latency
 		decayWindow = 30 * time.Second // default
 	}
 
+	// Peek (not Get) so the comparison does not perturb LRU bookkeeping.
+	prevStats, hadPrev := entry.LatencyTable.PeekDomainStats(domain)
+
 	wasEmpty, evictedDomain, evicted := entry.LatencyTable.UpdateClassified(domain, *latency, decayWindow, isAuthority)
 
 	// If the table transitioned from empty to non-empty, the node might
@@ -678,12 +724,30 @@ func (p *GlobalNodePool) RecordLatency(hash node.Hash, rawTarget string, latency
 		p.notifyAllPlatformsDirty(hash)
 	}
 
+	currentStats, hasCurrent := entry.LatencyTable.PeekDomainStats(domain)
+	sampleChanged := !hadPrev || (hasCurrent && latencyChangeExceeded(prevStats.Ewma, currentStats.Ewma))
+
 	if p.onNodeLatencyChanged != nil {
-		p.onNodeLatencyChanged(hash, domain)
+		if sampleChanged {
+			p.onNodeLatencyChanged(hash, domain)
+		}
 		if evicted {
 			p.onNodeLatencyChanged(hash, evictedDomain)
 		}
 	}
+}
+
+// latencyChangeExceeded reports whether the relative EWMA drift between the
+// previous and the current sample exceeds latencyPersistChangeRatio.
+func latencyChangeExceeded(prev, current time.Duration) bool {
+	if prev <= 0 {
+		return current != prev
+	}
+	diff := current - prev
+	if diff < 0 {
+		diff = -diff
+	}
+	return float64(diff)/float64(prev) > latencyPersistChangeRatio
 }
 
 // UpdateNodeEgressIP records an egress probe attempt and optionally updates
@@ -692,6 +756,14 @@ func (p *GlobalNodePool) RecordLatency(hash node.Hash, rawTarget string, latency
 //   - ip=nil,  loc=nil: keep both IP and region unchanged, but mark egress not ready.
 //   - ip!=nil, loc=nil: keep region if IP unchanged; clear region if IP changed.
 //   - loc!=nil: set region to loc (normalized).
+//
+// Persistence gating: OnNodeDynamicChanged fires only when the egress IP, the
+// region, or the egress-ready flag actually changes. The probe-attempt
+// timestamp stays in memory (see RecordLatency for the rationale); it is still
+// written together with egress_updated_at_ns whenever a change does occur, so
+// the bootstrap invariant
+// `egress_ready = egress_updated_at_ns > 0 && egress_updated_at_ns >= last_egress_update_attempt_ns`
+// keeps holding across restarts.
 func (p *GlobalNodePool) UpdateNodeEgressIP(hash node.Hash, ip *netip.Addr, loc *string) {
 	entry, ok := p.nodes.Load(hash)
 	if !ok {
@@ -741,7 +813,7 @@ func (p *GlobalNodePool) UpdateNodeEgressIP(hash node.Hash, ip *netip.Addr, loc 
 	if ipChanged || regionChanged || readyChanged {
 		p.notifyAllPlatformsDirty(hash)
 	}
-	if p.onNodeDynamicChanged != nil {
+	if (ipChanged || regionChanged || readyChanged) && p.onNodeDynamicChanged != nil {
 		p.onNodeDynamicChanged(hash)
 	}
 }

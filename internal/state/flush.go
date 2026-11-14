@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+// walTruncateMinInterval throttles WAL truncation to at most once per minute.
+// A truncating checkpoint blocks writers for the duration of the checkpoint, so
+// it is deliberately decoupled from the flush cadence (which can be as short as
+// the check tick when the dirty threshold is small).
+const walTruncateMinInterval = time.Minute
+
 // CacheFlushWorker periodically flushes dirty sets to cache.db.
 // It triggers a flush when:
 //   - DirtyCount() >= threshold, OR
@@ -18,6 +24,8 @@ type CacheFlushWorker struct {
 	thresholdFn func() int
 	intervalFn  func() time.Duration
 	checkTick   time.Duration // how often to check conditions
+
+	lastWALTruncate time.Time
 
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
@@ -100,5 +108,19 @@ func (w *CacheFlushWorker) run() {
 func (w *CacheFlushWorker) doFlush() {
 	if err := w.engine.FlushDirtySets(w.readers); err != nil {
 		log.Printf("[state] flush error (entries re-merged): %v", err)
+		return
+	}
+	w.truncateWAL()
+}
+
+// truncateWAL shrinks cache.db-wal after a successful flush.
+// Errors are logged, never propagated: a busy checkpoint just retries later.
+func (w *CacheFlushWorker) truncateWAL() {
+	if time.Since(w.lastWALTruncate) < walTruncateMinInterval {
+		return
+	}
+	w.lastWALTruncate = time.Now()
+	if err := w.engine.CacheRepo.TruncateWAL(); err != nil {
+		log.Printf("[state] wal truncate skipped: %v", err)
 	}
 }

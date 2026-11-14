@@ -1072,13 +1072,13 @@ func TestIsLatencyProbeDue_UsesAttemptTimestamps(t *testing.T) {
 
 	entry.LastLatencyProbeAttempt.Store(now.Add(-10 * time.Minute).UnixNano())
 	entry.LastAuthorityLatencyProbeAttempt.Store(now.Add(-10 * time.Minute).UnixNano())
-	if !mgr.isLatencyProbeDue(entry, now, 5*time.Minute, 1*time.Hour, []string{"example.com"}, 15*time.Second) {
+	if !mgr.isLatencyProbeDue(entry, now, 5*time.Minute, 1*time.Hour, []string{"example.com"}, 15*time.Second, 0) {
 		t.Fatal("expected due=true when last latency attempt is stale")
 	}
 
 	entry.LastLatencyProbeAttempt.Store(now.Add(-1 * time.Minute).UnixNano())
 	entry.LastAuthorityLatencyProbeAttempt.Store(now.Add(-2 * time.Hour).UnixNano())
-	if !mgr.isLatencyProbeDue(entry, now, 5*time.Minute, 1*time.Hour, []string{"example.com"}, 15*time.Second) {
+	if !mgr.isLatencyProbeDue(entry, now, 5*time.Minute, 1*time.Hour, []string{"example.com"}, 15*time.Second, 0) {
 		t.Fatal("expected due=true when authority attempt is stale")
 	}
 }

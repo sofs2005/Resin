@@ -386,8 +386,11 @@ func TestRecordLatency_AttemptOnly_UpdatesAttemptTimestamps(t *testing.T) {
 	if entry.HasLatency() {
 		t.Fatal("attempt-only RecordLatency(nil) must not write latency sample")
 	}
-	if dynamicCBCount.Load() != 1 {
-		t.Fatalf("expected 1 dynamic callback, got %d", dynamicCBCount.Load())
+	// Probe-attempt timestamps are memory-only by design: persisting them rewrote
+	// one nodes_dynamic row per probe per node. A restart therefore re-probes
+	// every node once, which is the accepted trade-off for the write reduction.
+	if got := dynamicCBCount.Load(); got != 0 {
+		t.Fatalf("expected no dynamic persistence callback for attempt-only probe, got %d", got)
 	}
 }
 
@@ -418,17 +421,18 @@ func TestUpdateNodeEgressIP_Change(t *testing.T) {
 		t.Fatalf("expected %v, got %v", ip1, entry.GetEgressIP())
 	}
 
-	// Same IP still updates probe-attempt timestamp.
+	// Same IP: the probe-attempt timestamp changes in memory only, so no
+	// persistence callback fires (that write carried no routing information).
 	pool.UpdateNodeEgressIP(h, &ip1, nil)
-	if dynamicCount.Load() != 2 {
-		t.Fatalf("expected callback on same IP attempt, got %d", dynamicCount.Load())
+	if dynamicCount.Load() != 1 {
+		t.Fatalf("expected no callback on unchanged IP attempt, got %d", dynamicCount.Load())
 	}
 
 	// Different IP → callback.
 	ip2 := netip.MustParseAddr("5.6.7.8")
 	pool.UpdateNodeEgressIP(h, &ip2, nil)
-	if dynamicCount.Load() != 3 {
-		t.Fatalf("expected 3 callbacks after IP change, got %d", dynamicCount.Load())
+	if dynamicCount.Load() != 2 {
+		t.Fatalf("expected 2 callbacks after IP change, got %d", dynamicCount.Load())
 	}
 }
 

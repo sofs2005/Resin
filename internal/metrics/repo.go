@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/Resinat/Resin/internal/state"
 )
@@ -66,8 +67,16 @@ CREATE TABLE IF NOT EXISTS metric_lease_lifetime_bucket (
 `
 
 // MetricsRepo handles persistence of metric buckets to metrics.db.
+//
+// When built with NewMemoryMetricsRepo the buckets live in memory instead
+// (memory != nil, db == nil): nothing is written to disk, the method set and
+// query semantics stay identical, and only the last RESIN_METRICS_RETENTION_HOURS
+// hours are retained.
 type MetricsRepo struct {
 	db *sql.DB
+
+	// memory is non-nil only in memory mode.
+	memory *memoryMetricsRepo
 }
 
 // NewMetricsRepo opens (or creates) metrics.db at the given path and initializes the schema.
@@ -86,16 +95,61 @@ func NewMetricsRepo(path string) (*MetricsRepo, error) {
 	return &MetricsRepo{db: db}, nil
 }
 
-// Close closes the database.
+// NewMemoryMetricsRepo creates an in-memory metrics repo. No file is opened and
+// no directory is created. A non-positive retention falls back to 24h.
+func NewMemoryMetricsRepo(retention time.Duration) *MetricsRepo {
+	return &MetricsRepo{memory: newMemoryMetricsRepo(retention)}
+}
+
+// IsMemory reports whether the repo keeps metric buckets purely in memory.
+func (r *MetricsRepo) IsMemory() bool {
+	return r != nil && r.memory != nil
+}
+
+// Retention returns the configured in-memory retention window (0 for the
+// SQLite backend, which is not retention-bound).
+func (r *MetricsRepo) Retention() time.Duration {
+	if r == nil || r.memory == nil {
+		return 0
+	}
+	return r.memory.retentionWindow()
+}
+
+// Close closes the database. In memory mode the buckets are simply dropped.
 func (r *MetricsRepo) Close() error {
+	if r == nil {
+		return nil
+	}
+	if r.memory != nil {
+		return nil
+	}
 	if r.db != nil {
 		return r.db.Close()
 	}
 	return nil
 }
 
+// TruncateWAL checkpoints metrics.db and truncates its WAL file.
+// Called after bucket persistence so the WAL cannot keep growing between
+// hourly bucket flushes. In memory mode there is no WAL, so it is a no-op.
+func (r *MetricsRepo) TruncateWAL() error {
+	if r == nil {
+		return nil
+	}
+	if r.memory != nil {
+		return nil
+	}
+	return state.TruncateWAL(r.db)
+}
+
 // WriteBucket persists a bucket flush data set in a single transaction.
 func (r *MetricsRepo) WriteBucket(data *BucketFlushData) error {
+	if r == nil {
+		return nil
+	}
+	if r.memory != nil {
+		return r.memory.writeBucket(data)
+	}
 	if data == nil {
 		return nil
 	}
@@ -170,6 +224,12 @@ func (r *MetricsRepo) WriteBucket(data *BucketFlushData) error {
 
 // WriteNodePoolSnapshot writes a node pool snapshot for a bucket.
 func (r *MetricsRepo) WriteNodePoolSnapshot(bucketStartUnix int64, totalNodes, healthyNodes, egressIPCount int) error {
+	if r == nil {
+		return nil
+	}
+	if r.memory != nil {
+		return r.memory.writeNodePoolSnapshot(bucketStartUnix, totalNodes, healthyNodes, egressIPCount)
+	}
 	_, err := r.db.Exec(`INSERT INTO metric_node_pool_bucket (bucket_start_unix, total_nodes, healthy_nodes, egress_ip_count)
 		VALUES (?,?,?,?) ON CONFLICT(bucket_start_unix)
 		DO UPDATE SET total_nodes = excluded.total_nodes, healthy_nodes = excluded.healthy_nodes, egress_ip_count = excluded.egress_ip_count`,
@@ -179,6 +239,12 @@ func (r *MetricsRepo) WriteNodePoolSnapshot(bucketStartUnix int64, totalNodes, h
 
 // WriteLatencyBucket writes access latency histogram for a bucket.
 func (r *MetricsRepo) WriteLatencyBucket(bucketStartUnix int64, platformID string, buckets []int64) error {
+	if r == nil {
+		return nil
+	}
+	if r.memory != nil {
+		return r.memory.writeLatencyBucket(bucketStartUnix, platformID, buckets)
+	}
 	bucketsJSON, _ := json.Marshal(buckets)
 	var (
 		err error
@@ -206,6 +272,12 @@ type TrafficBucketRow struct {
 
 // QueryTraffic returns traffic buckets in a time range.
 func (r *MetricsRepo) QueryTraffic(from, to int64) ([]TrafficBucketRow, error) {
+	if r == nil {
+		return nil, nil
+	}
+	if r.memory != nil {
+		return r.memory.queryTraffic(from, to)
+	}
 	q := `SELECT bucket_start_unix, ingress_bytes, egress_bytes
 		FROM metric_traffic_bucket WHERE bucket_start_unix >= ? AND bucket_start_unix <= ?`
 	args := []interface{}{from, to}
@@ -237,6 +309,12 @@ type RequestBucketRow struct {
 
 // QueryRequests returns request buckets in a time range.
 func (r *MetricsRepo) QueryRequests(from, to int64, platformID string) ([]RequestBucketRow, error) {
+	if r == nil {
+		return nil, nil
+	}
+	if r.memory != nil {
+		return r.memory.queryRequests(from, to, platformID)
+	}
 	q := `SELECT bucket_start_unix, platform_id, total_requests, success_requests
 		FROM metric_request_bucket WHERE bucket_start_unix >= ? AND bucket_start_unix <= ?`
 	args := []interface{}{from, to}
@@ -277,6 +355,12 @@ type ProbeBucketRow struct {
 
 // QueryProbes returns probe buckets in a time range.
 func (r *MetricsRepo) QueryProbes(from, to int64) ([]ProbeBucketRow, error) {
+	if r == nil {
+		return nil, nil
+	}
+	if r.memory != nil {
+		return r.memory.queryProbes(from, to)
+	}
 	rows, err := r.db.Query(`SELECT bucket_start_unix, total_count
 		FROM metric_probe_bucket WHERE bucket_start_unix >= ? AND bucket_start_unix <= ?
 		ORDER BY bucket_start_unix`, from, to)
@@ -306,6 +390,12 @@ type NodePoolBucketRow struct {
 
 // QueryNodePool returns node pool buckets in a time range.
 func (r *MetricsRepo) QueryNodePool(from, to int64) ([]NodePoolBucketRow, error) {
+	if r == nil {
+		return nil, nil
+	}
+	if r.memory != nil {
+		return r.memory.queryNodePool(from, to)
+	}
 	rows, err := r.db.Query(`SELECT bucket_start_unix, total_nodes, healthy_nodes, egress_ip_count
 		FROM metric_node_pool_bucket WHERE bucket_start_unix >= ? AND bucket_start_unix <= ?
 		ORDER BY bucket_start_unix`, from, to)
@@ -359,6 +449,12 @@ type AccessLatencyBucketRow struct {
 
 // QueryAccessLatency returns access latency histogram buckets in a time range.
 func (r *MetricsRepo) QueryAccessLatency(from, to int64, platformID string) ([]AccessLatencyBucketRow, error) {
+	if r == nil {
+		return nil, nil
+	}
+	if r.memory != nil {
+		return r.memory.queryAccessLatency(from, to, platformID)
+	}
 	q := `SELECT bucket_start_unix, platform_id, buckets_json
 		FROM metric_access_latency_bucket WHERE bucket_start_unix >= ? AND bucket_start_unix <= ?`
 	args := []interface{}{from, to}
@@ -403,6 +499,12 @@ type LeaseLifetimeBucketRow struct {
 
 // QueryLeaseLifetime returns lease lifetime buckets in a time range.
 func (r *MetricsRepo) QueryLeaseLifetime(from, to int64, platformID string) ([]LeaseLifetimeBucketRow, error) {
+	if r == nil {
+		return nil, nil
+	}
+	if r.memory != nil {
+		return r.memory.queryLeaseLifetime(from, to, platformID)
+	}
 	q := `SELECT bucket_start_unix, platform_id, sample_count, p1_ms, p5_ms, p50_ms
 		FROM metric_lease_lifetime_bucket WHERE bucket_start_unix >= ? AND bucket_start_unix <= ?`
 	args := []interface{}{from, to}

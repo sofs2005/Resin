@@ -52,6 +52,42 @@ type EnvConfig struct {
 	RequestLogQueueFlushInterval  time.Duration
 	RequestLogDBMaxMB             int
 	RequestLogDBRetainCount       int
+	// RequestLogRetentionHours is the time-based retention window for request
+	// logs. 0 disables time-based cleanup (size/count rotation still applies).
+	RequestLogRetentionHours int
+
+	// --- Persistence modes (memory-first) ---
+	// See DESIGN.md §持久化模式（memory-first）.
+	//
+	// CachePersist controls whether topology snapshots (nodes/leases) are
+	// written back to cache.db. When false (default) cache.db is opened and read
+	// at bootstrap for cold-start acceleration only: Mark* calls become no-ops
+	// and the CacheFlushWorker never starts, so steady-state cache.db writes are
+	// exactly zero.
+	CachePersist bool
+	// RequestLogStorage selects where request logs are stored: memory|sqlite.
+	RequestLogStorage string
+	// RequestLogMemoryEntries caps the in-memory request-log ring buffer
+	// (memory storage only).
+	RequestLogMemoryEntries int
+	// MetricsStorage selects where metric buckets are stored: memory|sqlite.
+	MetricsStorage string
+	// MetricsRetentionHours bounds how far back in-memory metric buckets are
+	// kept (memory storage only).
+	MetricsRetentionHours int
+
+	// Probe write-amplification controls
+	// ProbeFailureLogMode is off|limited|all; see probe.FailureLogMode*.
+	ProbeFailureLogMode string
+	// ProbeScanBatch caps how many probe tasks one scan tick may enqueue.
+	// 0 derives the limit from pool size and probe concurrency.
+	ProbeScanBatch int
+
+	// Probe interval defaults. These only seed the initial runtime config when
+	// state.db holds no persisted config; values saved via UI/API win.
+	MaxLatencyTestInterval          time.Duration
+	MaxEgressTestInterval           time.Duration
+	MaxAuthorityLatencyTestInterval time.Duration
 
 	// Auth
 	AuthVersion AuthVersion
@@ -69,6 +105,21 @@ type EnvConfig struct {
 	MetricLatencyBinWidthMS           int
 	MetricLatencyBinOverflowMS        int
 }
+
+// minProbeIntervalEnv is the smallest accepted probe interval for the
+// RESIN_MAX_*_TEST_INTERVAL seed values. It mirrors the runtime validation in
+// service.ValidateRuntimeConfig (30s).
+const minProbeIntervalEnv = 30 * time.Second
+
+// Storage mode values shared by RESIN_REQUEST_LOG_STORAGE and
+// RESIN_METRICS_STORAGE.
+const (
+	// StorageModeMemory keeps the data in a bounded in-memory structure. Nothing
+	// is written to disk; the data disappears on restart.
+	StorageModeMemory = "memory"
+	// StorageModeSQLite persists the data to SQLite exactly as before.
+	StorageModeSQLite = "sqlite"
+)
 
 // DefaultNodeDNSUpstreams returns the default node DNS upstream URI list.
 func DefaultNodeDNSUpstreams() []string {
@@ -133,6 +184,27 @@ func LoadEnvConfig() (*EnvConfig, error) {
 	cfg.RequestLogQueueFlushInterval = envDuration("RESIN_REQUEST_LOG_QUEUE_FLUSH_INTERVAL", 5*time.Minute, &errs)
 	cfg.RequestLogDBMaxMB = envInt("RESIN_REQUEST_LOG_DB_MAX_MB", 512, &errs)
 	cfg.RequestLogDBRetainCount = envInt("RESIN_REQUEST_LOG_DB_RETAIN_COUNT", 2, &errs)
+	cfg.RequestLogRetentionHours = envInt("RESIN_REQUEST_LOG_RETENTION_HOURS", 168, &errs)
+
+	// --- Persistence modes (memory-first) ---
+	cfg.CachePersist = envOnOff("RESIN_CACHE_PERSIST", false, &errs)
+	cfg.RequestLogStorage = envStorageMode("RESIN_REQUEST_LOG_STORAGE", StorageModeMemory, &errs)
+	cfg.RequestLogMemoryEntries = envInt("RESIN_REQUEST_LOG_MEMORY_ENTRIES", 10000, &errs)
+	cfg.MetricsStorage = envStorageMode("RESIN_METRICS_STORAGE", StorageModeMemory, &errs)
+	cfg.MetricsRetentionHours = envInt("RESIN_METRICS_RETENTION_HOURS", 24, &errs)
+
+	// --- Probe write-amplification controls ---
+	cfg.ProbeFailureLogMode = strings.ToLower(strings.TrimSpace(
+		envStr("RESIN_PROBE_FAILURE_LOG", "limited"),
+	))
+	cfg.ProbeScanBatch = envInt("RESIN_PROBE_SCAN_BATCH", 0, &errs)
+	cfg.MaxLatencyTestInterval = envDuration("RESIN_MAX_LATENCY_TEST_INTERVAL", 1*time.Hour, &errs)
+	cfg.MaxEgressTestInterval = envDuration("RESIN_MAX_EGRESS_TEST_INTERVAL", 6*time.Hour, &errs)
+	cfg.MaxAuthorityLatencyTestInterval = envDuration(
+		"RESIN_MAX_AUTHORITY_LATENCY_TEST_INTERVAL",
+		3*time.Hour,
+		&errs,
+	)
 
 	// --- Auth (tokens must be defined; empty means auth disabled) ---
 	authVersionRaw := os.Getenv("RESIN_AUTH_VERSION")
@@ -301,6 +373,42 @@ func LoadEnvConfig() (*EnvConfig, error) {
 	if cfg.RequestLogQueueFlushInterval <= 0 {
 		errs = append(errs, "RESIN_REQUEST_LOG_QUEUE_FLUSH_INTERVAL must be positive")
 	}
+	if cfg.RequestLogRetentionHours < 0 {
+		errs = append(errs, "RESIN_REQUEST_LOG_RETENTION_HOURS must be >= 0 (0 disables time-based cleanup)")
+	}
+	validatePositive("RESIN_REQUEST_LOG_MEMORY_ENTRIES", cfg.RequestLogMemoryEntries, &errs)
+	if cfg.RequestLogMemoryEntries > 1000000 {
+		errs = append(errs, "RESIN_REQUEST_LOG_MEMORY_ENTRIES must be <= 1000000")
+	}
+	validatePositive("RESIN_METRICS_RETENTION_HOURS", cfg.MetricsRetentionHours, &errs)
+
+	switch cfg.ProbeFailureLogMode {
+	case "off", "limited", "all":
+	default:
+		errs = append(errs, fmt.Sprintf(
+			"RESIN_PROBE_FAILURE_LOG: invalid value %q (allowed: off, limited, all)",
+			cfg.ProbeFailureLogMode,
+		))
+	}
+	if cfg.ProbeScanBatch < 0 {
+		errs = append(errs, "RESIN_PROBE_SCAN_BATCH must be >= 0 (0 = derive from pool size and concurrency)")
+	}
+	for _, probeInterval := range []struct {
+		name  string
+		value time.Duration
+	}{
+		{"RESIN_MAX_LATENCY_TEST_INTERVAL", cfg.MaxLatencyTestInterval},
+		{"RESIN_MAX_EGRESS_TEST_INTERVAL", cfg.MaxEgressTestInterval},
+		{"RESIN_MAX_AUTHORITY_LATENCY_TEST_INTERVAL", cfg.MaxAuthorityLatencyTestInterval},
+	} {
+		if probeInterval.value < minProbeIntervalEnv {
+			errs = append(errs, fmt.Sprintf(
+				"%s must be at least %s",
+				probeInterval.name,
+				minProbeIntervalEnv,
+			))
+		}
+	}
 
 	// Queue size must be >= 2x batch size
 	if cfg.RequestLogQueueSize < 2*cfg.RequestLogQueueFlushBatchSize {
@@ -347,6 +455,50 @@ func envDuration(key string, defaultVal time.Duration, errs *[]string) time.Dura
 		return defaultVal
 	}
 	return d
+}
+
+// envOnOff parses an off|on environment variable. Unset or empty values fall
+// back to defaultVal; anything other than off/on is reported as an error so a
+// typo cannot silently change the persistence behaviour.
+func envOnOff(key string, defaultVal bool, errs *[]string) bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch raw {
+	case "":
+		return defaultVal
+	case "on":
+		return true
+	case "off":
+		return false
+	default:
+		*errs = append(*errs, fmt.Sprintf(
+			"%s: invalid value %q (allowed: off, on)",
+			key,
+			raw,
+		))
+		return defaultVal
+	}
+}
+
+// envStorageMode parses a memory|sqlite environment variable.
+// Unset or empty values fall back to defaultVal; unknown values are reported as
+// errors instead of being silently coerced.
+func envStorageMode(key, defaultVal string, errs *[]string) string {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch raw {
+	case "":
+		return defaultVal
+	case StorageModeMemory, StorageModeSQLite:
+		return raw
+	default:
+		*errs = append(*errs, fmt.Sprintf(
+			"%s: invalid value %q (allowed: %s, %s)",
+			key,
+			raw,
+			StorageModeMemory,
+			StorageModeSQLite,
+		))
+		return defaultVal
+	}
 }
 
 func envStringSlice(key string, defaultVal []string, errs *[]string) []string {

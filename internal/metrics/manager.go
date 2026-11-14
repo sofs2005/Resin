@@ -551,10 +551,11 @@ func (m *Manager) flushPendingTasks(errPrefix string) {
 	m.persistMu.Lock()
 	defer m.persistMu.Unlock()
 
+	wrote := false
 	for {
 		task, ok := m.peekPendingTask()
 		if !ok {
-			return
+			break
 		}
 		if err := m.writePersistTask(task); err != nil {
 			if errPrefix != "" {
@@ -563,6 +564,15 @@ func (m *Manager) flushPendingTasks(errPrefix string) {
 			return
 		}
 		m.popPendingTask()
+		wrote = true
+	}
+
+	if wrote && m.repo != nil {
+		// Bucket writes are hourly, so a truncating checkpoint after a
+		// successful persist is cheap and keeps metrics.db-wal small.
+		if err := m.repo.TruncateWAL(); err != nil {
+			log.Printf("[metrics] wal truncate skipped: %v", err)
+		}
 	}
 }
 

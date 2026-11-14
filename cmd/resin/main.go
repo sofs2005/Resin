@@ -76,18 +76,41 @@ func supportsANSIColorOnStderr() bool {
 	return (stat.Mode() & os.ModeCharDevice) != 0
 }
 
-func loadRuntimeConfig(engine *state.StateEngine) *config.RuntimeConfig {
+func loadRuntimeConfig(engine *state.StateEngine, envCfg *config.EnvConfig) *config.RuntimeConfig {
 	runtimeCfg, ver, err := engine.GetSystemConfig()
 	if err != nil {
 		fatalf("load system config: %v", err)
 	}
 	if runtimeCfg == nil {
 		log.Println("No persisted runtime config found, using defaults")
-		return config.NewDefaultRuntimeConfig()
+		return defaultRuntimeConfig(envCfg)
 	}
 	normalizeRuntimeConfig(runtimeCfg)
 	log.Printf("Loaded persisted runtime config (version %d)", ver)
 	return runtimeCfg
+}
+
+// defaultRuntimeConfig builds the initial runtime config from the built-in
+// defaults, overridden by probe interval env seeds.
+//
+// These env values are *seeds only*: they apply when state.db holds no persisted
+// runtime config. Values saved through the UI/API are never overwritten, so an
+// operator preference always wins over the deployment default.
+func defaultRuntimeConfig(envCfg *config.EnvConfig) *config.RuntimeConfig {
+	cfg := config.NewDefaultRuntimeConfig()
+	if envCfg == nil {
+		return cfg
+	}
+	if envCfg.MaxLatencyTestInterval > 0 {
+		cfg.MaxLatencyTestInterval = config.Duration(envCfg.MaxLatencyTestInterval)
+	}
+	if envCfg.MaxEgressTestInterval > 0 {
+		cfg.MaxEgressTestInterval = config.Duration(envCfg.MaxEgressTestInterval)
+	}
+	if envCfg.MaxAuthorityLatencyTestInterval > 0 {
+		cfg.MaxAuthorityLatencyTestInterval = config.Duration(envCfg.MaxAuthorityLatencyTestInterval)
+	}
+	return cfg
 }
 
 // normalizeRuntimeConfig fills backward-compatible defaults for fields added
@@ -308,6 +331,11 @@ func newTopologyRuntime(
 		LatencyAuthorities: func() []string {
 			return runtimeConfigSnapshot(runtimeCfg).LatencyAuthorities
 		},
+		MaxConsecutiveFailures: func() int {
+			return runtimeConfigSnapshot(runtimeCfg).MaxConsecutiveFailures
+		},
+		FailureLogMode: envCfg.ProbeFailureLogMode,
+		ScanBatch:      envCfg.ProbeScanBatch,
 	})
 
 	pool.SetOnNodeAdded(func(hash node.Hash) {

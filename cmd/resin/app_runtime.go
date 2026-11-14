@@ -59,6 +59,17 @@ func run() error {
 	}
 	log.Println("Persistence bootstrap complete")
 
+	// Weak-persist gating must be decided before any Mark* call can happen.
+	// cache.db is still read during bootstrap for cold-start acceleration, but
+	// with persistence off nothing is ever written back to it.
+	if envCfg.CachePersist {
+		engine.SetPersistEnabled(true)
+		log.Println("[state] cache persistence: on (topology snapshots are flushed to cache.db)")
+	} else {
+		engine.SetPersistEnabled(false)
+		log.Println("[state] cache persistence: off (cache.db is read-only; topology rebuilt from subscriptions)")
+	}
+
 	app, err := newResinApp(envCfg, engine)
 	if err != nil {
 		_ = dbCloser.Close()
@@ -96,7 +107,7 @@ func newResinApp(envCfg *config.EnvConfig, engine *state.StateEngine) (*resinApp
 		envCfg:     envCfg,
 		runtimeCfg: &atomic.Pointer[config.RuntimeConfig]{},
 	}
-	app.runtimeCfg.Store(loadRuntimeConfig(engine))
+	app.runtimeCfg.Store(loadRuntimeConfig(engine, envCfg))
 	if err := ensureDefaultAccountHeaderRule(engine); err != nil {
 		return nil, err
 	}
@@ -270,6 +281,12 @@ func (a *resinApp) bootstrapFromPersistence(engine *state.StateEngine) error {
 	}
 
 	flushReaders := newFlushReaders(a.topoRuntime.pool, a.topoRuntime.subManager, a.topoRuntime.router)
+	if !a.envCfg.CachePersist {
+		// No write-back and no final flush: the dirty sets never grow because
+		// StateEngine.Mark* returns early, so the worker would be idle anyway.
+		a.flushWorker = nil
+		return nil
+	}
 	a.flushWorker = state.NewCacheFlushWorker(
 		engine,
 		flushReaders,
@@ -285,12 +302,24 @@ func (a *resinApp) initObservability() error {
 	requestLogCfg := deriveRequestLogRuntimeSettings(a.envCfg)
 	metricsCfg := deriveMetricsManagerSettings(a.envCfg)
 
-	metricsDB, err := metrics.NewMetricsRepo(filepath.Join(a.envCfg.LogDir, "metrics.db"))
-	if err != nil {
-		return fmt.Errorf("metrics DB: %w", err)
+	var metricsRepo *metrics.MetricsRepo
+	if a.envCfg.MetricsStorage == config.StorageModeSQLite {
+		var metricsErr error
+		metricsRepo, metricsErr = metrics.NewMetricsRepo(filepath.Join(a.envCfg.LogDir, "metrics.db"))
+		if metricsErr != nil {
+			return fmt.Errorf("metrics DB: %w", metricsErr)
+		}
+		log.Printf("[metrics] storage: sqlite (%s)", filepath.Join(a.envCfg.LogDir, "metrics.db"))
+	} else {
+		metricsRepo = metrics.NewMemoryMetricsRepo(
+			time.Duration(a.envCfg.MetricsRetentionHours) * time.Hour,
+		)
+		log.Printf(
+			"[metrics] storage: memory (retention %dh; metric history is lost on restart)",
+			a.envCfg.MetricsRetentionHours,
+		)
 	}
-	a.metricsDB = metricsDB
-
+	a.metricsDB = metricsRepo
 	a.metricsManager = metrics.NewManager(metrics.ManagerConfig{
 		Repo:                        a.metricsDB,
 		LatencyBinMs:                metricsCfg.LatencyBinMs,
@@ -316,6 +345,12 @@ func (a *resinApp) initObservability() error {
 		requestLogCfg.DBMaxBytes,
 		requestLogCfg.DBRetainCount,
 	)
+	if a.envCfg.RequestLogStorage == config.StorageModeSQLite {
+		a.requestlogRepo.SetStorageMode(requestlog.StorageModeSQLite, a.envCfg.RequestLogMemoryEntries)
+	} else {
+		a.requestlogRepo.SetStorageMode(requestlog.StorageModeMemory, a.envCfg.RequestLogMemoryEntries)
+	}
+	a.requestlogRepo.SetRetention(time.Duration(a.envCfg.RequestLogRetentionHours) * time.Hour)
 	if err := a.requestlogRepo.Open(); err != nil {
 		return fmt.Errorf("requestlog repo open: %w", err)
 	}
@@ -330,8 +365,12 @@ func (a *resinApp) initObservability() error {
 
 func (a *resinApp) startBackgroundServices() {
 	// --- Step 8 Batch 1: CacheFlushWorker + GeoIP + MetricsManager ---
-	a.flushWorker.Start()
-	log.Println("Cache flush worker started")
+	if a.flushWorker != nil {
+		a.flushWorker.Start()
+		log.Println("Cache flush worker started")
+	} else {
+		log.Println("Cache flush worker disabled (RESIN_CACHE_PERSIST=off; cache.db is read-only)")
+	}
 
 	startGeoIPService(a.geoSvc)
 	log.Println("GeoIP service started (batch 1)")
@@ -596,6 +635,8 @@ func (a *resinApp) shutdown(ctx context.Context) {
 		log.Println("SingboxBuilder stopped")
 	}
 
-	a.flushWorker.Stop() // final cache flush before DB close
+	if a.flushWorker != nil {
+		a.flushWorker.Stop() // final cache flush before DB close
+	}
 	log.Println("Server stopped")
 }

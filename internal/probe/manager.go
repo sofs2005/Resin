@@ -55,6 +55,19 @@ type ProbeConfig struct {
 	LatencyTestURL     func() string
 	LatencyAuthorities func() []string
 
+	// MaxConsecutiveFailures supplies the live circuit-breaker threshold.
+	// Used to derive the probe backoff multiplier for circuit-open nodes.
+	// Nil (or a non-positive result) disables backoff.
+	MaxConsecutiveFailures func() int
+
+	// FailureLogMode selects how probe failure logs are emitted:
+	// "off", "limited" (default), or "all". See failureLogLimiter.
+	FailureLogMode string
+
+	// ScanBatch caps how many tasks one scan tick may enqueue.
+	// <= 0 derives the limit from the pool size and probe concurrency.
+	ScanBatch int
+
 	// OnProbeEvent is called after each probe attempt completes (egress or latency).
 	// The kind parameter is "egress" or "latency".
 	OnProbeEvent func(kind string)
@@ -86,6 +99,46 @@ type ProbeManager struct {
 	egressTraceURLs                 func() []string
 	probeTimeout                    func() time.Duration
 	onProbeEvent                    func(kind string)
+	maxConsecutiveFailures          func() int
+	scanBatch                       int
+	failureLog                      *failureLogLimiter
+
+	// egressCursor and latencyCursor rotate the per-tick enqueue window so a
+	// batch-limited scan still covers the whole pool over successive ticks.
+	egressCursor  scanCursor
+	latencyCursor scanCursor
+}
+
+// probeBackoffMaxShift caps the speculative probe backoff at 2^3 == 8x.
+const probeBackoffMaxShift = 3
+
+// probeBackoffMaxInterval caps the effective probe interval after backoff.
+const probeBackoffMaxInterval = 24 * time.Hour
+
+// scanCursor implements the round-robin window used by batch-limited scans.
+type scanCursor struct {
+	mu   sync.Mutex
+	next int
+}
+
+// take returns the window [start, start+n) over a space of total candidates and
+// advances the cursor past that window (wrapping). n is clamped to total.
+func (c *scanCursor) take(total, limit int) (start, n int) {
+	if total <= 0 || limit <= 0 {
+		return 0, 0
+	}
+	n = limit
+	if n > total {
+		n = total
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.next < 0 || c.next >= total {
+		c.next = 0
+	}
+	start = c.next
+	c.next = (start + n) % total
+	return start, n
 }
 
 const (
@@ -95,6 +148,9 @@ const (
 	defaultLatencyTestURL = "https://www.gstatic.com/generate_204"
 	defaultProbeTimeout   = 15 * time.Second
 	defaultQueueCap       = 1024
+	// minScanBatch is the floor for the per-tick scan batch, so small pools are
+	// still drained in a single tick.
+	minScanBatch = 64
 )
 
 var defaultEgressTraceURLs = []string{egressTraceURL, egressBackupTraceURL}
@@ -295,6 +351,9 @@ func NewProbeManager(cfg ProbeConfig) *ProbeManager {
 		egressTraceURLs:                 cfg.EgressTraceURLs,
 		probeTimeout:                    cfg.ProbeTimeout,
 		onProbeEvent:                    cfg.OnProbeEvent,
+		maxConsecutiveFailures:          cfg.MaxConsecutiveFailures,
+		scanBatch:                       cfg.ScanBatch,
+		failureLog:                      newFailureLogLimiter(cfg.FailureLogMode),
 	}
 }
 
@@ -509,6 +568,11 @@ func (m *ProbeManager) ProbeLatencySync(hash node.Hash) (*LatencyProbeResult, er
 }
 
 // scanEgress iterates all pool nodes and probes those due for egress check.
+//
+// At most batchLimit tasks are enqueued per tick and the window rotates, so
+// successive ticks cover the whole pool. Without the cap one tick enqueued one
+// task per node (tens of thousands on a large pool), flooding the task queue and
+// the probe workers in a burst.
 func (m *ProbeManager) scanEgress() {
 	now := time.Now()
 	interval := 24 * time.Hour // default MaxEgressTestInterval
@@ -517,7 +581,9 @@ func (m *ProbeManager) scanEgress() {
 	}
 	lookahead := 15 * time.Second
 	subLookup := m.pool.MakeSubLookup()
+	maxFailures := m.currentMaxConsecutiveFailures()
 
+	candidates := make([]node.Hash, 0, m.scanCandidateHint())
 	m.pool.Range(func(h node.Hash, entry *node.NodeEntry) bool {
 		// Check stop signal.
 		select {
@@ -534,22 +600,19 @@ func (m *ProbeManager) scanEgress() {
 			return true // skip nil outbound
 		}
 
-		// Check if due: lastAttempt + interval - lookahead <= now.
-		lastCheck := entry.LastEgressUpdateAttempt.Load()
-		if lastCheck > 0 {
-			nextDue := time.Unix(0, lastCheck).Add(interval).Add(-lookahead)
-			if now.Before(nextDue) {
-				return true // not yet due
-			}
+		if !egressProbeDue(entry, now, interval, lookahead, maxFailures) {
+			return true // not yet due
 		}
 
-		m.enqueueProbe(h, probeTaskKindEgress, probePriorityNormal)
-
+		candidates = append(candidates, h)
 		return true
 	})
+
+	m.enqueueScanWindow(candidates, probeTaskKindEgress, &m.egressCursor)
 }
 
 // scanLatency iterates all pool nodes and probes those due for latency check.
+// Batch limiting and the rotating window work exactly as in scanEgress.
 func (m *ProbeManager) scanLatency() {
 	now := time.Now()
 	maxLatencyInterval := 1 * time.Hour // default
@@ -562,11 +625,13 @@ func (m *ProbeManager) scanLatency() {
 	}
 	lookahead := 15 * time.Second
 	subLookup := m.pool.MakeSubLookup()
+	maxFailures := m.currentMaxConsecutiveFailures()
 	var authorities []string
 	if m.latencyAuthorities != nil {
 		authorities = m.latencyAuthorities()
 	}
 
+	candidates := make([]node.Hash, 0, m.scanCandidateHint())
 	m.pool.Range(func(h node.Hash, entry *node.NodeEntry) bool {
 		select {
 		case <-m.stopCh:
@@ -582,14 +647,132 @@ func (m *ProbeManager) scanLatency() {
 			return true // skip nil outbound
 		}
 
-		if !m.isLatencyProbeDue(entry, now, maxLatencyInterval, maxAuthorityInterval, authorities, lookahead) {
+		if !m.isLatencyProbeDue(entry, now, maxLatencyInterval, maxAuthorityInterval, authorities, lookahead, maxFailures) {
 			return true
 		}
 
-		m.enqueueProbe(h, probeTaskKindLatency, probePriorityNormal)
-
+		candidates = append(candidates, h)
 		return true
 	})
+
+	m.enqueueScanWindow(candidates, probeTaskKindLatency, &m.latencyCursor)
+}
+
+// enqueueScanWindow enqueues one cursor window of the candidate list.
+func (m *ProbeManager) enqueueScanWindow(candidates []node.Hash, kind probeTaskKind, cursor *scanCursor) {
+	if len(candidates) == 0 {
+		return
+	}
+	start, n := cursor.take(len(candidates), m.scanBatchLimit())
+	for i := 0; i < n; i++ {
+		select {
+		case <-m.stopCh:
+			return
+		default:
+		}
+		m.enqueueProbe(candidates[(start+i)%len(candidates)], kind, probePriorityNormal)
+	}
+}
+
+// scanBatchLimit returns how many tasks one scan tick may enqueue:
+// min(poolSize, max(64, ProbeConcurrency)), overridable via ProbeConfig.ScanBatch.
+func (m *ProbeManager) scanBatchLimit() int {
+	limit := m.workerCount
+	if limit < minScanBatch {
+		limit = minScanBatch
+	}
+	if m.scanBatch > 0 {
+		limit = m.scanBatch
+	}
+	if poolSize := m.pool.Size(); limit > poolSize {
+		limit = poolSize
+	}
+	if limit < 0 {
+		limit = 0
+	}
+	return limit
+}
+
+// scanCandidateHint pre-sizes the per-tick candidate slice without allocating
+// one slot per node on very large pools.
+func (m *ProbeManager) scanCandidateHint() int {
+	hint := m.scanBatchLimit() * 2
+	if hint < 64 {
+		hint = 64
+	}
+	return hint
+}
+
+// currentMaxConsecutiveFailures returns the live circuit-breaker threshold, or 0
+// when backoff is not configured.
+func (m *ProbeManager) currentMaxConsecutiveFailures() int {
+	if m.maxConsecutiveFailures == nil {
+		return 0
+	}
+	if v := m.maxConsecutiveFailures(); v > 0 {
+		return v
+	}
+	return 0
+}
+
+// probeBackoffMultiplier returns the interval multiplier for a node whose
+// circuit breaker is currently open:
+//
+//	1 << min(failureCount/maxConsecutiveFailures, 3)  →  2x / 4x / 8x
+//
+// Healthy nodes (circuit closed) and pools without a failure threshold always
+// return 1. A newly added node also starts circuit-open with failureCount 0, so
+// it returns 1 and is probed at the normal rate — exactly what it needs.
+func probeBackoffMultiplier(entry *node.NodeEntry, maxConsecutiveFailures int) int {
+	if entry == nil || maxConsecutiveFailures <= 0 {
+		return 1
+	}
+	if entry.CircuitOpenSince.Load() == 0 {
+		return 1
+	}
+	failures := int(entry.FailureCount.Load())
+	if failures < 0 {
+		failures = 0
+	}
+	shift := failures / maxConsecutiveFailures
+	if shift > probeBackoffMaxShift {
+		shift = probeBackoffMaxShift
+	}
+	return 1 << shift
+}
+
+// effectiveProbeInterval applies the backoff multiplier, capped at 24h so a
+// zombie node is still re-probed regularly enough to notice recovery.
+func effectiveProbeInterval(interval time.Duration, multiplier int) time.Duration {
+	if interval <= 0 {
+		return interval
+	}
+	if multiplier < 1 {
+		multiplier = 1
+	}
+	effective := interval * time.Duration(multiplier)
+	if effective > probeBackoffMaxInterval {
+		effective = probeBackoffMaxInterval
+	}
+	return effective
+}
+
+// egressProbeDue reports whether an egress probe is due, applying the
+// circuit-open backoff so dead nodes decay to at most one probe per 24h.
+func egressProbeDue(
+	entry *node.NodeEntry,
+	now time.Time,
+	interval time.Duration,
+	lookahead time.Duration,
+	maxConsecutiveFailures int,
+) bool {
+	lastAttempt := entry.LastEgressUpdateAttempt.Load()
+	if lastAttempt == 0 {
+		return true
+	}
+	effective := effectiveProbeInterval(interval, probeBackoffMultiplier(entry, maxConsecutiveFailures))
+	nextDue := time.Unix(0, lastAttempt).Add(effective).Add(-lookahead)
+	return !now.Before(nextDue)
 }
 
 func (m *ProbeManager) runProbeWorker() {
@@ -781,18 +964,26 @@ func (m *ProbeManager) tryDeleteTaskState(key probeTaskKey, state *probeTaskStat
 
 // isLatencyProbeDue checks whether a node needs a latency probe, based on
 // last probe-attempt timestamps (not latency-table timestamps).
+//
+// maxConsecutiveFailures enables the circuit-open backoff: a node that keeps
+// failing is probed 2x/4x/8x less often (capped at 24h), which cuts the probe
+// rate of permanently dead nodes without delaying the recovery of live ones.
+// Pass 0 (or a non-positive value) to disable backoff.
 func (m *ProbeManager) isLatencyProbeDue(
 	entry *node.NodeEntry,
 	now time.Time,
 	maxLatencyInterval, maxAuthorityInterval time.Duration,
 	authorities []string,
 	lookahead time.Duration,
+	maxConsecutiveFailures int,
 ) bool {
+	multiplier := probeBackoffMultiplier(entry, maxConsecutiveFailures)
+
 	lastAny := entry.LastLatencyProbeAttempt.Load()
 	if lastAny == 0 {
 		return true
 	}
-	anyDeadline := time.Unix(0, lastAny).Add(maxLatencyInterval).Add(-lookahead)
+	anyDeadline := time.Unix(0, lastAny).Add(effectiveProbeInterval(maxLatencyInterval, multiplier)).Add(-lookahead)
 	if !now.Before(anyDeadline) {
 		return true
 	}
@@ -805,7 +996,9 @@ func (m *ProbeManager) isLatencyProbeDue(
 	if lastAuthority == 0 {
 		return true
 	}
-	authorityDeadline := time.Unix(0, lastAuthority).Add(maxAuthorityInterval).Add(-lookahead)
+	authorityDeadline := time.Unix(0, lastAuthority).
+		Add(effectiveProbeInterval(maxAuthorityInterval, multiplier)).
+		Add(-lookahead)
 	return !now.Before(authorityDeadline)
 }
 
@@ -830,10 +1023,10 @@ func (m *ProbeManager) probeEgress(hash node.Hash, entry *node.NodeEntry) {
 	_, stage, err := m.performEgressProbe(ctx, hash)
 	if err != nil {
 		if stage == egressProbeParseError {
-			log.Printf("[probe] parse egress IP for %s: %v", hash.Hex(), err)
+			m.logEgressFailure("parse egress IP for %s: %v", hash.Hex(), err)
 			return
 		}
-		log.Printf("[probe] egress probe failed for %s: %v", hash.Hex(), err)
+		m.logEgressFailure("egress probe failed for %s: %v", hash.Hex(), err)
 		return
 	}
 }
@@ -857,9 +1050,30 @@ func (m *ProbeManager) probeLatency(hash node.Hash, entry *node.NodeEntry, testU
 	ctx, cancel := m.newProbeContext()
 	defer cancel()
 	if err := m.performLatencyProbe(ctx, hash, testURL); err != nil {
-		log.Printf("[probe] latency probe failed for %s: %v", hash.Hex(), err)
+		m.logLatencyFailure("latency probe failed for %s: %v", hash.Hex(), err)
 		return
 	}
+}
+
+// logLatencyFailure emits a latency-probe failure line subject to the
+// configured rate limit. Errors are still returned to callers unchanged; only
+// the log line is throttled.
+func (m *ProbeManager) logLatencyFailure(format string, args ...any) {
+	if m.failureLog == nil {
+		log.Printf("[probe] "+format, args...)
+		return
+	}
+	m.failureLog.printf("[probe] "+format, args...)
+}
+
+// logEgressFailure emits an egress-probe failure line subject to the configured
+// rate limit.
+func (m *ProbeManager) logEgressFailure(format string, args ...any) {
+	if m.failureLog == nil {
+		log.Printf("[probe] "+format, args...)
+		return
+	}
+	m.failureLog.printf("[probe] "+format, args...)
 }
 
 func (m *ProbeManager) performEgressProbe(ctx context.Context, hash node.Hash) (netip.Addr, egressProbeErrorStage, error) {

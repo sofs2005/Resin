@@ -8,6 +8,11 @@ import (
 	"github.com/Resinat/Resin/internal/proxy"
 )
 
+// retentionCleanupInterval is how often the retention window is enforced.
+// Rotation already runs on every batch; retention is deliberately much cheaper
+// to run hourly (one DELETE plus a directory listing).
+const retentionCleanupInterval = time.Hour
+
 // Service provides an async request log writer.
 // EmitRequestLog performs a non-blocking channel send (drops on overflow).
 // A background goroutine flushes batches to the Repo.
@@ -16,6 +21,7 @@ type Service struct {
 	queue     chan proxy.RequestLogEntry
 	batchSize int
 	interval  time.Duration
+	cleanup   time.Duration
 	flushReq  chan chan struct{}
 
 	stopCh chan struct{}
@@ -28,6 +34,9 @@ type ServiceConfig struct {
 	QueueSize     int
 	FlushBatch    int
 	FlushInterval time.Duration
+	// CleanupInterval overrides retentionCleanupInterval (tests, tuning).
+	// <= 0 uses the default of one hour.
+	CleanupInterval time.Duration
 }
 
 // NewService creates a new request log service.
@@ -44,11 +53,16 @@ func NewService(cfg ServiceConfig) *Service {
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
+	cleanup := cfg.CleanupInterval
+	if cleanup <= 0 {
+		cleanup = retentionCleanupInterval
+	}
 	return &Service{
 		repo:      cfg.Repo,
 		queue:     make(chan proxy.RequestLogEntry, queueSize),
 		batchSize: batchSize,
 		interval:  interval,
+		cleanup:   cleanup,
 		flushReq:  make(chan chan struct{}, 64),
 		stopCh:    make(chan struct{}),
 	}
@@ -103,6 +117,8 @@ func (s *Service) flushLoop() {
 	batch := make([]proxy.RequestLogEntry, 0, s.batchSize)
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
+	cleanupTicker := time.NewTicker(s.cleanup)
+	defer cleanupTicker.Stop()
 
 	for {
 		select {
@@ -117,6 +133,13 @@ func (s *Service) flushLoop() {
 			if len(batch) > 0 {
 				s.flush(batch)
 				batch = batch[:0]
+			}
+
+		case <-cleanupTicker.C:
+			if s.repo != nil {
+				if err := s.repo.CleanupExpired(); err != nil {
+					log.Printf("[requestlog] retention cleanup failed: %v", err)
+				}
 			}
 
 		case done := <-s.flushReq:
@@ -187,10 +210,23 @@ func (s *Service) drainAndFlush(batch []proxy.RequestLogEntry) {
 }
 
 func (s *Service) flush(entries []proxy.RequestLogEntry) {
-	if n, err := s.repo.InsertBatch(entries); err != nil {
+	n, err := s.repo.InsertBatch(entries)
+	if err != nil {
 		log.Printf("[requestlog] flush %d entries failed: %v", len(entries), err)
-	} else if n > 0 {
-		log.Printf("[requestlog] flushed %d entries", n)
+		return
+	}
+	if n <= 0 {
+		return
+	}
+	if s.repo.IsMemory() {
+		// Memory mode: reads trigger this flush via the read barrier, so a log
+		// line per flush would spam the container log. There is no WAL either.
+		return
+	}
+	log.Printf("[requestlog] flushed %d entries", n)
+	// Keep the active shard's WAL bounded; throttled inside the repo.
+	if err := s.repo.TruncateWAL(); err != nil {
+		log.Printf("[requestlog] wal truncate skipped: %v", err)
 	}
 }
 

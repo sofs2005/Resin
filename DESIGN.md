@@ -561,6 +561,9 @@ Resin 内置了 GeoIP 服务，用于支持 Platform 的 RegionFilters 功能。
 强持久化数据写入 <RESIN_STATE_DIR>/state.db。
 弱持久化数据写入 <RESIN_CACHE_DIR>/cache.db。
 
+> 默认部署下弱持久化整体关闭（`RESIN_CACHE_PERSIST=off`），`cache.db` 只用于启动时只读加载；
+> 节点/租约/请求日志/指标历史都在内存中维护。原因与重启语义代价见「其他细节 › 持久化模式（memory-first）」。
+
 ### 持久化需求
 配置、平台、订阅需要强持久化，API 成功即可靠落盘。
 节点、租约使用弱持久化。
@@ -2310,6 +2313,84 @@ API 阻塞到更新完成
 
 ## 其他细节
 
+### 磁盘写入控制（探测落库门控）
+
+大规模节点池（数万节点、多数不可用）下，探测曾是对每个节点、每轮探测至少两次落库：`nodes_dynamic`（探测时间戳 + 计数）与 `node_latency`（EWMA）几乎整表重写，WAL 双写放大。现约束如下：
+
+1. **只在状态跨越时落库**（`topology.GlobalNodePool`）
+   * `RecordLatency`：探测**尝试时间戳仅保留在内存**，不再标记 `nodes_dynamic` 脏；`node_latency` 仅在首次采样、EWMA 相对变化 > 25%（`latencyPersistChangeRatio`）或发生域淘汰时落库。`nil` 采样（探测失败）不改动延迟表，因此无需落库。
+   * `RecordResult`：仅在跨越点标记 `nodes_dynamic` 脏——成功侧 `failure_count>=1→0`、`circuit_open_since→0`、`success_count 0→1` 与达到 `min_consecutive_successes`；失败侧 `failure_count 0→1`、达到 `max_consecutive_failures`（熔断开启）、`success_count >= min → 0`。
+   * `UpdateNodeEgressIP`：仅当 egress IP / 地区 / ready 标志变化时落库；采集时间戳同样只在变化时随行写入，以保持启动期 `egress_ready` 推导不变式。
+   * 语义代价：DB 中的 `failure_count` / `success_count` 会滞后于内存（只记录跨越点），`nodes_dynamic` 的探测时间戳不再等同于最后一次探测；重启后时间戳归零会让每个节点立即被扫描一次（受扫描批量上限约束）。决策状态 `circuit_open_since`、healthy/available 判定与 egress 元数据仍然准确。
+2. **探测退避**：熔断持续开启的节点，有效间隔放大 `1 << min(failureCount/maxConsecutiveFailures, 3)`（2x/4x/8x），且总间隔封顶 24h；健康节点不变，`max_consecutive_failures=0` 时退避关闭。
+3. **扫描分批**：`scanLatency` / `scanEgress` 每 tick 最多入队 `scanBatchLimit()` 个任务，配合轮转游标避免瞬间压满队列。
+4. **SQLite 收紧**（`state.OpenDB`，所有库共用）：`wal_autocheckpoint=1000`、`journal_size_limit=64MB`、`cache_size=-16384`（16MB）、`temp_store=MEMORY`；`state.TruncateWAL` 在低频点（cache flush 后 / 请求日志批量写入后 / metrics bucket 持久化后）执行 `PRAGMA wal_checkpoint(TRUNCATE)`，失败只记日志。
+5. **请求日志时间保留期**：见 `RESIN_REQUEST_LOG_RETENTION_HOURS`。
+
+### 持久化模式（memory-first）
+
+节点数据（`nodes_static` / `nodes_dynamic` / `node_latency` / `subscription_nodes` / `leases`）本质是从订阅实时派生出来的、
+规模不大且每次订阅刷新都会重建，请求日志与指标历史也只是运维视图。因此在第一阶段（"只在状态跨越时落库"）之后，
+默认进一步切换为 **memory-first**：稳态写入接近 0，只保留极少量必须落盘的配置数据。
+
+#### 谁能落盘
+
+| 数据 | 默认存储 | 说明 |
+| --- | --- | --- |
+| 运行时配置、平台、订阅、账号 Header 规则、自定义接入点 | `state.db`（**必须落盘**） | 强一致核心状态，API 返回成功即已落盘 |
+| 节点/租约/订阅-节点关系（topology 快照） | 内存（`RESIN_CACHE_PERSIST=off`） | `cache.db` 只在启动时**只读加载**用于冷启动加速，不再写回（启动期仍可能有一次性的 schema migration / 一致性修复写入，量极小） |
+| 结构化请求日志 | 内存环形缓冲（`RESIN_REQUEST_LOG_STORAGE=memory`） | 容量 `RESIN_REQUEST_LOG_MEMORY_ENTRIES`（默认 10000 条，FIFO 淘汰） |
+| 指标 bucket 历史 | 内存（`RESIN_METRICS_STORAGE=memory`） | 保留 `RESIN_METRICS_RETENTION_HOURS`（默认 24h），写入时淘汰过期 bucket |
+| 实时指标（吞吐/连接/租约环） | 内存 | 与本改造无关，一直只在内存 |
+
+#### 实现方式
+
+1. **cache.db 停写**：`state.StateEngine` 增加 `persistEnabled` 开关。关闭时所有弱持久化
+   `Mark*`（`MarkNodeStatic` / `MarkNodeDynamic` / `MarkNodeLatency` / `MarkLease` /
+   `MarkSubscriptionNode` 及其 `*Delete`）**直接 return**，不向 dirty set 写入任何 key，
+   因此 dirty set 不会无界增长；同时 `CacheFlushWorker` 不启动、退出时也不做最终 flush。
+   读路径（`LoadAll*`）不受影响，bootstrap 仍会打开并读取已有的 `cache.db`。
+   启动日志会打印 `[state] cache persistence: off (cache.db is read-only; topology rebuilt from subscriptions)`。
+2. **请求日志内存化**：`requestlog.Repo` 增加 `StorageMode`（`memory` / `sqlite`）。
+   memory 模式不创建任何文件、不启动轮转/保留期逻辑，`Open()`/`Close()`/`TruncateWAL()`/`CleanupExpired()` 都不碰磁盘；
+   `InsertBatch` 直接写入环形缓冲（O(1)）。`List` / `GetByID` / `GetPayloads` 在内存快照上实现与 SQLite 版
+   **完全一致**的语义：`ListFilter` 的全部字段（含 `Fuzzy` 大小写不敏感子串、`Account` 精确匹配时排除空值、
+   `Before`/`After` 开区间）、`ts_ns DESC, id ASC` 排序、`Limit` 默认 50、`hasMore` 与 `Cursor`
+   （`ts_ns < cursor.ts OR (ts_ns = cursor.ts AND id > cursor.id)`）逐条对齐。
+3. **指标内存化**：`metrics.MetricsRepo` 增加内存实现，方法集（`WriteBucket` / `WriteNodePoolSnapshot` /
+   `WriteLatencyBucket` / `QueryTraffic` / `QueryRequests` / `QueryProbes` / `QueryNodePool` /
+   `QueryAccessLatency` / `QueryLeaseLifetime`）签名不变，`Query*` 的区间过滤（闭区间）、
+   排序（`bucket_start_unix` 升序）、以及"空 `platformID` 表示全局（`platform_id IS NULL`）、
+   但 `QueryLeaseLifetime` 的空 `platformID` 表示全部平台"的既有语义保持一致。
+   每次写入顺带淘汰 `now - retention` 之前的 bucket，内存占用为 `retention / bucketSeconds × 维度数` 级别（数 MB）。
+4. **兼容性**：两个后端都通过**同一个 `*Repo` 类型**内的模式分支实现，调用方（API 层、`Manager`）零改动；
+   默认值来自环境变量，非法值启动即报错。
+
+#### 重启后的语义代价（用户可见）
+
+关闭持久化后，进程重启等于"拓扑从订阅重建"，以下状态会丢失或重算：
+
+* **粘性租约丢失**：`leases` 不再落盘。重启后所有 Platform 的 sticky 会话重新分配账号（客户端可能换出口 IP）。
+  这是最主要的用户可见变化；如果某些场景强依赖粘性稳定，可临时设 `RESIN_CACHE_PERSIST=on`。
+* **健康状态从头重算**：`failure_count` / `success_count` / `circuit_open_since` 归零。所有节点以"熔断开启、无失败计数"起步，
+  需要 `min_consecutive_successes` 次连续成功才转为健康；探测尝试时间戳归零会让每个节点在启动后被扫描一次（受扫描批量上限约束）。
+  订阅更新仍然会强制刷新一轮，因此节点列表本身不会缺。
+* **延迟统计（TD-EWMA）清空**：`node_latency` 不落盘，重启后需要重新积累采样，冷启动初期择优选点退化为随机/按出口 IP 均衡。
+* **图表历史清空**：`metric_*` bucket 只保留在内存，重启后 Dashboard 的历史曲线（流量/请求/探测/节点数/访问延迟/租约存活）从空开始。
+* **请求日志历史清空**：内存环形缓冲随进程消失；`log/request_logs-*.db`、`log/metrics.db` 若存在也不会再被写入（旧文件仍可保留在磁盘上，可直接删除）。
+* **`cache/` 目录不再增长**：`cache.db` 停留在最后一次 `RESIN_CACHE_PERSIST=on` 时的内容（可能已过期/陈旧），
+  但启动时会用它做冷启动加速；它不会影响正确性，因为订阅刷新会覆盖拓扑。
+* **回滚方式**：把 `RESIN_CACHE_PERSIST` 设为 `on`、`RESIN_REQUEST_LOG_STORAGE` / `RESIN_METRICS_STORAGE` 设为 `sqlite`
+  重启即可回到第一阶段的落盘行为（文件路径与 schema 未变，无需迁移）。
+
+#### 环境变量
+
+* `RESIN_CACHE_PERSIST`：`off|on`，默认 `off`。`off` 时 `cache.db` 只读（不写回、不启动 flush worker）。
+* `RESIN_REQUEST_LOG_STORAGE`：`memory|sqlite`，默认 `memory`。见上。
+* `RESIN_REQUEST_LOG_MEMORY_ENTRIES`：内存请求日志环形缓冲容量，默认 `10000`，取值 `1~1000000`。
+* `RESIN_METRICS_STORAGE`：`memory|sqlite`，默认 `memory`。
+* `RESIN_METRICS_RETENTION_HOURS`：内存指标保留小时数，默认 `24`（必须为正）。
+
 ### GeoIP 下载与订阅下载的错误重试机制抽象
 GeoIP 与订阅的下载都有错误重试的需求。
 第一次使用本地网络下载。如果网络层面失败，再尝试两次从 Default 平台随机选代理节点进行下载。不使用任何退避算法，失败立刻重试。
@@ -2348,6 +2429,19 @@ GeoIP 与订阅的下载都有错误重试的需求。
 * `RESIN_REQUEST_LOG_QUEUE_FLUSH_INTERVAL`：写库间隔。默认 "5m"。
 * `RESIN_REQUEST_LOG_DB_MAX_MB`：SQLite 当前活动日志数据库的最大字节数。默认 512。
 * `RESIN_REQUEST_LOG_DB_RETAIN_COUNT`：保留的日志数据库文件总数（滚动日志），默认 2。
+* `RESIN_REQUEST_LOG_RETENTION_HOURS`：请求日志的时间保留期（小时）。默认 168（7 天），0 表示不按时间清理（仅按上面两项的体积/数量轮转）。超过保留期的滚动库文件（含 `-wal`/`-shm`）会被删除，活动库内超期行按 `ts_ns` 删除（payload 表随 `ON DELETE CASCADE` 一起清理）。清理在启动时与后台每小时各执行一次。
+
+磁盘写入控制（减写相关）：
+* `RESIN_PROBE_FAILURE_LOG`：探测失败日志的输出策略。枚举：`off|limited|all`，默认 `limited`。`limited` 下同一窗口（30s）最多打印 5 条失败明细，其余丢弃并在下一条输出中附带 `(suppressed N)`；`off` 完全不打印；`all` 保持逐条打印（仅用于调试）。日志限流不影响探测的错误返回路径。
+* `RESIN_PROBE_SCAN_BATCH`：单次扫描 tick 最多入队的探测任务数。默认 0（自动取值 `min(poolSize, max(64, RESIN_PROBE_CONCURRENCY))`）。扫描内部维护轮转游标，保证被截断的任务在后续 tick 中补齐。
+* `RESIN_MAX_LATENCY_TEST_INTERVAL` / `RESIN_MAX_EGRESS_TEST_INTERVAL` / `RESIN_MAX_AUTHORITY_LATENCY_TEST_INTERVAL`：探测间隔的**初始默认值**（默认 `1h` / `6h` / `3h`，最小 30s）。仅在 `state.db` 中尚无持久化运行时配置时生效；一旦通过 UI/API 保存过运行时配置，则以保存值为准（不会被环境变量覆盖）。
+
+持久化模式（memory-first，见「持久化模式（memory-first）」一节）：
+* `RESIN_CACHE_PERSIST`：是否把拓扑快照写回 `cache.db`。枚举：`off|on`，默认 `off`。`off` 时 `cache.db` 仅启动时只读加载，不写回、不启动 flush worker（稳态写入接近 0）。
+* `RESIN_REQUEST_LOG_STORAGE`：请求日志存储后端。枚举：`memory|sqlite`，默认 `memory`。
+* `RESIN_REQUEST_LOG_MEMORY_ENTRIES`：内存请求日志环形缓冲容量。默认 `10000`，范围 `1~1000000`。
+* `RESIN_METRICS_STORAGE`：指标 bucket 存储后端。枚举：`memory|sqlite`，默认 `memory`。
+* `RESIN_METRICS_RETENTION_HOURS`：内存指标 bucket 的保留小时数。默认 `24`（必须为正）。
 
 认证设置：
 * 启动时会先加载当前工作目录下的 `.env` 文件（文件不存在则忽略；格式错误则拒绝启动）；系统或 shell 已设置的环境变量优先于 `.env`。

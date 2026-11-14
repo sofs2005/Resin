@@ -18,6 +18,16 @@ func newCacheRepo(db *sql.DB) *CacheRepo {
 	return &CacheRepo{db: db}
 }
 
+// TruncateWAL checkpoints cache.db and truncates its WAL file.
+// Called after successful batch flushes so cache.db-wal cannot grow without
+// bound (it previously reached 125MB and never shrank).
+func (r *CacheRepo) TruncateWAL() error {
+	if r == nil {
+		return nil
+	}
+	return TruncateWAL(r.db)
+}
+
 // --- nodes_static ---
 
 // BulkUpsertNodesStatic batch-inserts or updates node static records.

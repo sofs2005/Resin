@@ -128,6 +128,33 @@ func (t *LatencyTable) GetDomainStats(domain string) (DomainLatencyStats, bool) 
 	return DomainLatencyStats{}, false
 }
 
+// PeekDomainStats returns the latency stats for a domain without touching the
+// LRU access timestamp.
+//
+// Callers that only compare or report the current value (for example the
+// persistence-gating logic in topology.RecordLatency) must use this instead of
+// GetDomainStats: touching the timestamp on a pure read would keep rarely
+// probed domains resident and change which regular domain gets evicted.
+func (t *LatencyTable) PeekDomainStats(domain string) (DomainLatencyStats, bool) {
+	key := domainKey(domain)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	for i := range t.authorities {
+		if !t.authorities[i].occupied || t.authorities[i].key != key {
+			continue
+		}
+		return t.authorities[i].stats, true
+	}
+	for i := range t.regular {
+		if !t.regular[i].occupied || t.regular[i].key != key {
+			continue
+		}
+		return t.regular[i].stats, true
+	}
+	return DomainLatencyStats{}, false
+}
+
 // LoadEntry stores a bootstrap-recovered entry directly (no TD-EWMA).
 func (t *LatencyTable) LoadEntry(domain string, stats DomainLatencyStats) {
 	_, _ = t.LoadEntryClassified(domain, stats, false)

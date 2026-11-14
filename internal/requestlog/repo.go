@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,12 +21,33 @@ import (
 
 const logSummarySelectColumns = "id, ts_ns, proxy_type, client_ip, platform_id, platform_name, account, target_host, target_url, node_hash, node_tag, egress_ip, duration_ns, first_byte_duration_ns, net_ok, http_method, http_status, resin_error, upstream_stage, upstream_err_kind, upstream_errno, upstream_err_msg, ingress_bytes, egress_bytes, payload_present, req_headers_len, req_body_len, resp_headers_len, resp_body_len, req_headers_truncated, req_body_truncated, resp_headers_truncated, resp_body_truncated"
 
+// walTruncateMinInterval throttles WAL truncation of the active log database.
+// A truncating checkpoint blocks writers, so it runs at most once a minute even
+// when batches flush more often.
+const walTruncateMinInterval = time.Minute
+
 // Repo manages rolling SQLite databases for request logs.
 // Each DB is named request_logs-<unix_ms>.db and lives in logDir.
+//
+// When the storage mode is StorageModeMemory the Repo keeps entries in a bounded
+// in-memory ring buffer instead: no files are created, no rotation/retention
+// runs, and the history is lost on restart. The public method set and all query
+// semantics stay identical in both modes.
 type Repo struct {
 	logDir      string
 	maxBytes    int64
 	retainCount int
+
+	// storageMode selects the backend. The zero value is StorageModeSQLite so
+	// existing callers keep the historical behaviour; the runtime opts into
+	// memory mode explicitly via SetStorageMode.
+	storageMode StorageMode
+	// memory holds the ring buffer in memory mode (nil in sqlite mode).
+	memory *memoryLogStore
+
+	// retention is the time-based retention window. 0 disables time-based
+	// cleanup and keeps only the size/count-based rotation.
+	retention time.Duration
 
 	// Active DB handle and path.
 	activeDB   *sql.DB
@@ -34,11 +56,17 @@ type Repo struct {
 	// readBarrier runs before read queries to improve freshness.
 	readBarrierMu sync.RWMutex
 	readBarrier   func()
+
+	truncateMu      sync.Mutex
+	lastWALTruncate time.Time
 }
 
 // NewRepo creates a Repo that manages rolling request log databases.
 // maxBytes controls when the active DB is rotated; retainCount sets
 // how many database shard files are kept in total.
+//
+// Time-based retention is configured separately via SetRetention so the default
+// behaviour of existing callers is unchanged.
 func NewRepo(logDir string, maxBytes int64, retainCount int) *Repo {
 	if maxBytes <= 0 {
 		maxBytes = 512 * 1024 * 1024 // 512 MB default
@@ -50,13 +78,70 @@ func NewRepo(logDir string, maxBytes int64, retainCount int) *Repo {
 		logDir:      logDir,
 		maxBytes:    maxBytes,
 		retainCount: retainCount,
+		storageMode: StorageModeSQLite,
 	}
+}
+
+// SetStorageMode selects the storage backend. It must be called before Open.
+// In StorageModeMemory no file is ever created and memoryEntries bounds the ring
+// buffer (a non-positive value falls back to the default of 10000 entries).
+// Any other mode value selects the historical SQLite backend.
+func (r *Repo) SetStorageMode(mode StorageMode, memoryEntries int) {
+	if mode == StorageModeMemory {
+		r.storageMode = StorageModeMemory
+		r.memory = newMemoryLogStore(memoryEntries)
+		return
+	}
+	r.storageMode = StorageModeSQLite
+	r.memory = nil
+}
+
+// StorageMode reports the configured storage backend.
+func (r *Repo) StorageMode() StorageMode {
+	if r == nil {
+		return StorageModeSQLite
+	}
+	if r.storageMode == StorageModeMemory {
+		return StorageModeMemory
+	}
+	return StorageModeSQLite
+}
+
+// IsMemory reports whether the repo keeps request logs purely in memory.
+func (r *Repo) IsMemory() bool {
+	return r.StorageMode() == StorageModeMemory
+}
+
+// SetRetention configures the time-based retention window (for example 168h).
+// A non-positive duration disables time-based cleanup. Must be called before
+// Open so the first cleanup already honours the window.
+func (r *Repo) SetRetention(retention time.Duration) {
+	r.retention = retention
+}
+
+// Retention returns the configured time-based retention window.
+func (r *Repo) Retention() time.Duration {
+	return r.retention
 }
 
 // Open opens (or creates) the active request log database.
 // If a previous DB exists in the directory it is reused as active;
 // a new one is created only when no existing DB is found.
+//
+// In memory mode Open does no filesystem work at all: no directory is created
+// and no rotation/retention bookkeeping runs.
 func (r *Repo) Open() error {
+	if r.storageMode == StorageModeMemory {
+		if r.memory == nil {
+			r.memory = newMemoryLogStore(0)
+		}
+		log.Printf(
+			"[requestlog] storage: memory (ring capacity=%d entries; request logs are never written to disk and are lost on restart)",
+			r.memory.capacityEntries(),
+		)
+		return nil
+	}
+
 	if err := os.MkdirAll(r.logDir, 0o755); err != nil {
 		return fmt.Errorf("requestlog repo mkdir %s: %w", r.logDir, err)
 	}
@@ -82,8 +167,12 @@ func (r *Repo) Open() error {
 	return r.rotateDB()
 }
 
-// Close closes the active DB.
+// Close closes the active DB. In memory mode the ring buffer is simply dropped:
+// nothing is flushed to disk on shutdown.
 func (r *Repo) Close() error {
+	if r.storageMode == StorageModeMemory {
+		return nil
+	}
 	if r.activeDB != nil {
 		err := r.activeDB.Close()
 		r.activeDB = nil
@@ -95,7 +184,16 @@ func (r *Repo) Close() error {
 
 // InsertBatch inserts a batch of log entries + optional payloads in a single
 // transaction. Returns the number of rows successfully inserted.
+// In memory mode the entries go straight into the ring buffer (O(1) per entry)
+// and no I/O happens.
 func (r *Repo) InsertBatch(entries []proxy.RequestLogEntry) (int, error) {
+	if r.storageMode == StorageModeMemory {
+		if r.memory == nil {
+			r.memory = newMemoryLogStore(0)
+		}
+		return r.memory.insert(entries), nil
+	}
+
 	if r.activeDB == nil {
 		if err := r.recoverActiveDB(); err != nil {
 			return 0, err
@@ -277,6 +375,11 @@ type ListCursor struct {
 func (r *Repo) List(f ListFilter) ([]LogSummary, bool, *ListCursor, error) {
 	r.runReadBarrier()
 
+	if r.storageMode == StorageModeMemory {
+		rows, hasMore, nextCursor := r.memory.list(f)
+		return rows, hasMore, nextCursor, nil
+	}
+
 	files, err := r.listDBFiles()
 	if err != nil {
 		return nil, false, nil, err
@@ -334,8 +437,13 @@ func (r *Repo) List(f ListFilter) ([]LogSummary, bool, *ListCursor, error) {
 }
 
 // GetByID looks up a single log entry across all retained DBs.
+// In memory mode the lookup is a single map hit.
 func (r *Repo) GetByID(id string) (*LogSummary, error) {
 	r.runReadBarrier()
+
+	if r.storageMode == StorageModeMemory {
+		return r.memory.getByID(id), nil
+	}
 
 	files, err := r.listDBFiles()
 	if err != nil {
@@ -358,8 +466,14 @@ func (r *Repo) GetByID(id string) (*LogSummary, error) {
 }
 
 // GetPayloads retrieves payload data for a given log ID across all retained DBs.
+// In memory mode the lookup is a single map hit; entries stored without a payload
+// row return (nil, nil), exactly like the SQLite path.
 func (r *Repo) GetPayloads(logID string) (*PayloadRow, error) {
 	r.runReadBarrier()
+
+	if r.storageMode == StorageModeMemory {
+		return r.memory.getPayloads(logID), nil
+	}
 
 	files, err := r.listDBFiles()
 	if err != nil {
@@ -496,6 +610,14 @@ func (r *Repo) maybeRotate() error {
 }
 
 func (r *Repo) cleanup() error {
+	// Time-based cleanup runs first: a file that fell out of the retention
+	// window is removed regardless of how many files the count-based rule would
+	// keep. Count-based truncation still bounds the directory when retention is
+	// disabled or the window is longer than the write rate can fill.
+	if err := r.removeExpiredFiles(time.Now()); err != nil {
+		log.Printf("[requestlog] warning: retention cleanup failed: %v", err)
+	}
+
 	files, err := r.listDBFiles()
 	if err != nil {
 		return err
@@ -512,6 +634,113 @@ func (r *Repo) cleanup() error {
 		os.Remove(f + "-shm")
 	}
 	return nil
+}
+
+// CleanupExpired enforces the time-based retention window:
+//   - shard files whose embedded creation timestamp is older than the window and
+//     that are not the active file are deleted (with their -wal/-shm siblings);
+//   - rows older than the window are deleted from the active file. The payload
+//     table has ON DELETE CASCADE, and foreign_keys=ON is set on every
+//     connection opened through state.OpenDB, so payload rows follow.
+//
+// A zero retention window disables the whole pass. Errors are aggregated so one
+// failing shard does not skip the rest of the cleanup.
+// In memory mode retention is a no-op: the ring buffer bounds itself by capacity.
+func (r *Repo) CleanupExpired() error {
+	if r.storageMode == StorageModeMemory {
+		return nil
+	}
+	if r.retention <= 0 {
+		return nil
+	}
+	now := time.Now()
+	return errors.Join(
+		r.removeExpiredFiles(now),
+		r.deleteExpiredRows(now),
+	)
+}
+
+// removeExpiredFiles deletes shard files that fell out of the retention window.
+// The active file is never deleted; its expired rows are handled in place.
+func (r *Repo) removeExpiredFiles(now time.Time) error {
+	if r.retention <= 0 {
+		return nil
+	}
+	cutoffMs := now.Add(-r.retention).UnixMilli()
+
+	files, err := r.listDBFiles()
+	if err != nil {
+		return err
+	}
+
+	var errs []error
+	for _, path := range files {
+		if path == r.activePath {
+			continue
+		}
+		createdMs, ok := dbFileTimestampMs(path)
+		if !ok || createdMs >= cutoffMs {
+			continue
+		}
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			if err := os.Remove(path + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+				errs = append(errs, fmt.Errorf("remove %s%s: %w", path, suffix, err))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// deleteExpiredRows deletes rows older than the retention window from the
+// active shard. Batched deletion by timestamp uses the idx_request_logs_ts_id
+// index.
+func (r *Repo) deleteExpiredRows(now time.Time) error {
+	if r.retention <= 0 || r.activeDB == nil {
+		return nil
+	}
+	cutoffNs := now.Add(-r.retention).UnixNano()
+	res, err := r.activeDB.Exec("DELETE FROM request_logs WHERE ts_ns < ?", cutoffNs)
+	if err != nil {
+		return fmt.Errorf("delete expired request logs: %w", err)
+	}
+	if affected, err := res.RowsAffected(); err == nil && affected > 0 {
+		log.Printf("[requestlog] retention cleanup removed %d expired rows", affected)
+	}
+	return nil
+}
+
+// dbFileTimestampMs extracts the unix-millisecond creation stamp embedded in a
+// request_logs-<unix_ms>.db file name.
+func dbFileTimestampMs(path string) (int64, bool) {
+	name := filepath.Base(path)
+	if !strings.HasPrefix(name, "request_logs-") || !strings.HasSuffix(name, ".db") {
+		return 0, false
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(name, "request_logs-"), ".db")
+	ms, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || ms <= 0 {
+		return 0, false
+	}
+	return ms, true
+}
+
+// TruncateWAL checkpoints the active database and truncates its WAL file.
+// Throttled to walTruncateMinInterval; errors are returned for the caller to
+// log and are never fatal. In memory mode there is no WAL, so it is a no-op.
+func (r *Repo) TruncateWAL() error {
+	if r.storageMode == StorageModeMemory {
+		return nil
+	}
+	if r.activeDB == nil {
+		return nil
+	}
+	r.truncateMu.Lock()
+	defer r.truncateMu.Unlock()
+	if !r.lastWALTruncate.IsZero() && time.Since(r.lastWALTruncate) < walTruncateMinInterval {
+		return nil
+	}
+	r.lastWALTruncate = time.Now()
+	return state.TruncateWAL(r.activeDB)
 }
 
 func (r *Repo) listDBFiles() ([]string, error) {
