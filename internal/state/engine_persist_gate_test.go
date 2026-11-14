@@ -71,6 +71,9 @@ func TestStateEngine_PersistEnabled_MarksGrowDirtySet(t *testing.T) {
 	engine, _, _ := newTestEngine(t)
 
 	engine.SetPersistEnabled(true)
+	// Volatile tables (nodes_dynamic / node_latency) are opt-in; this test
+	// covers the full-persistence mode.
+	engine.SetPersistVolatile(true)
 	engine.MarkNodeStatic("hash-1")
 	engine.MarkNodeDynamic("hash-1")
 	engine.MarkNodeLatency("hash-1", "example.com")

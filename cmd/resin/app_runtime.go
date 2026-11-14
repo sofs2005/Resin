@@ -62,9 +62,19 @@ func run() error {
 	// Weak-persist gating must be decided before any Mark* call can happen.
 	// cache.db is still read during bootstrap for cold-start acceleration, but
 	// with persistence off nothing is ever written back to it.
+	//
+	// Scope: only the static topology set (nodes_static, subscription_nodes,
+	// leases) is persisted by default. nodes_dynamic and node_latency are probe
+	// results that are recomputed within one probe interval, so persisting them
+	// costs disk without buying restart speed.
+	engine.SetPersistVolatile(envCfg.CachePersistVolatile)
 	if envCfg.CachePersist {
 		engine.SetPersistEnabled(true)
-		log.Println("[state] cache persistence: on (topology snapshots are flushed to cache.db)")
+		if envCfg.CachePersistVolatile {
+			log.Println("[state] cache persistence: on (static + volatile: static nodes, subscriptions, leases, dynamic states, latency)")
+		} else {
+			log.Println("[state] cache persistence: on (static only: static nodes, subscriptions, leases; probe results stay in memory)")
+		}
 	} else {
 		engine.SetPersistEnabled(false)
 		log.Println("[state] cache persistence: off (cache.db is read-only; topology rebuilt from subscriptions)")

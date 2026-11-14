@@ -148,6 +148,9 @@ func TestEngine_WeakPersist_CacheDataSurvivesRestart(t *testing.T) {
 
 	engine1.MarkNodeStatic("n1")
 	engine1.MarkSubscriptionNode("s1", "n1")
+	// This round-trip test covers every table, including the opt-in volatile
+	// ones (nodes_dynamic / node_latency).
+	engine1.SetPersistVolatile(true)
 	engine1.MarkNodeDynamic("n1")
 	engine1.MarkNodeLatency("n1", "google.com")
 	engine1.MarkLease("p1", "user1")
@@ -194,6 +197,9 @@ func TestEngine_WeakPersist_CacheDataSurvivesRestart(t *testing.T) {
 
 func TestEngine_WeakPersist_FlushAndLoad(t *testing.T) {
 	engine, _, _ := newTestEngine(t)
+	// This test exercises the full weak-persist path, including the volatile
+	// tables that are opt-in at runtime.
+	engine.SetPersistVolatile(true)
 
 	// Simulate in-memory store.
 	nodeStore := map[string]*model.NodeStatic{

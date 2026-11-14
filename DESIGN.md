@@ -2351,6 +2351,11 @@ API 阻塞到更新完成
    因此 dirty set 不会无界增长；同时 `CacheFlushWorker` 不启动、退出时也不做最终 flush。
    读路径（`LoadAll*`）不受影响，bootstrap 仍会打开并读取已有的 `cache.db`。
    启动日志会打印 `[state] cache persistence: off (cache.db is read-only; topology rebuilt from subscriptions)`。
+   即使打开 `RESIN_CACHE_PERSIST=on`，默认也只持久化**静态集合**（`nodes_static` / `subscription_nodes` / `leases`）：
+   `StateEngine` 的 `persistVolatile` 开关（`RESIN_CACHE_PERSIST_VOLATILE=off`，默认）会让
+   `MarkNodeDynamic` / `MarkNodeLatency` 直接 return。原因是这两张表是探测结果，一次探测周期（4.5 万节点）即可全部脏化，
+   实测在 `on` 模式下 5 分钟写出 93MB；而它们的有效寿命不超过一个探测间隔，重启后本来就从零重算
+   （启动日志 `Loaded 0 node dynamic states` 是正常状态）。需要排障时可用 `RESIN_CACHE_PERSIST_VOLATILE=on` 临时恢复全量落盘。
 2. **请求日志内存化**：`requestlog.Repo` 增加 `StorageMode`（`memory` / `sqlite`）。
    memory 模式不创建任何文件、不启动轮转/保留期逻辑，`Open()`/`Close()`/`TruncateWAL()`/`CleanupExpired()` 都不碰磁盘；
    `InsertBatch` 直接写入环形缓冲（O(1)）。`List` / `GetByID` / `GetPayloads` 在内存快照上实现与 SQLite 版
@@ -2386,6 +2391,9 @@ API 阻塞到更新完成
 #### 环境变量
 
 * `RESIN_CACHE_PERSIST`：`off|on`，默认 `off`。`off` 时 `cache.db` 只读（不写回、不启动 flush worker）。
+* `RESIN_CACHE_PERSIST_VOLATILE`：`off|on`，默认 `off`。仅在 `RESIN_CACHE_PERSIST=on` 时有效；
+  控制是否把易变表（`nodes_dynamic` / `node_latency`）也落盘。`off` 时 cache 只持久化静态集合
+  （`nodes_static` / `subscription_nodes` / `leases`），稳态写入从 ~0.31 MB/s 降到 &lt; 5MB / 5min。
 * `RESIN_REQUEST_LOG_STORAGE`：`memory|sqlite`，默认 `memory`。见上。
 * `RESIN_REQUEST_LOG_MEMORY_ENTRIES`：内存请求日志环形缓冲容量，默认 `10000`，取值 `1~1000000`。
 * `RESIN_METRICS_STORAGE`：`memory|sqlite`，默认 `memory`。

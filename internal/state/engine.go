@@ -47,6 +47,18 @@ type StateEngine struct {
 	// runtime disables it explicitly when cache persistence is off.
 	persistEnabled atomic.Bool
 
+	// persistVolatile controls whether the volatile topology tables
+	// (nodes_dynamic, node_latency) participate in weak persistence. It
+	// defaults to enabled so the library keeps its historical "persist
+	// everything" behaviour; the runtime turns it off unless the operator asks
+	// for it (RESIN_CACHE_PERSIST_VOLATILE=on).
+	//
+	// Rationale for turning it off: probe results are recomputed from the
+	// network within one probe interval, so writing them back only costs disk.
+	// The static set (nodes_static, subscription_nodes, leases) stays, because
+	// rebuilding it requires re-fetching every subscription.
+	persistVolatile atomic.Bool
+
 	dirtyNodesStatic       *DirtySet[string]
 	dirtyNodesDynamic      *DirtySet[string]
 	dirtyNodeLatency       *DirtySet[NodeLatencyDirtyKey]
@@ -66,6 +78,7 @@ func newStateEngine(stateRepo *StateRepo, cacheRepo *CacheRepo) *StateEngine {
 		dirtySubscriptionNodes: NewDirtySet[SubscriptionNodeDirtyKey](),
 	}
 	e.persistEnabled.Store(true)
+	e.persistVolatile.Store(true)
 	return e
 }
 
@@ -81,6 +94,25 @@ func (e *StateEngine) SetPersistEnabled(enabled bool) {
 // PersistEnabled reports whether weak-persist writes to cache.db are enabled.
 func (e *StateEngine) PersistEnabled() bool {
 	return e.persistEnabled.Load()
+}
+
+// SetPersistVolatile enables or disables persistence of the volatile topology
+// tables (nodes_dynamic, node_latency). When disabled (the runtime default) the
+// dirty sets for those tables never grow, so a flush only carries static nodes,
+// subscription-node bindings and leases.
+//
+// Rationale: probe results are recomputed from the network within one probe
+// interval, so writing them back buys nothing but disk writes — with a 47k-node
+// pool the probe cycle dirtied tens of thousands of rows every few minutes.
+// Trade-off: after a restart nodes_dynamic is empty or stale, so every node
+// looks unprobed and circuit-breaker state is re-learned from scratch.
+func (e *StateEngine) SetPersistVolatile(enabled bool) {
+	e.persistVolatile.Store(enabled)
+}
+
+// PersistVolatile reports whether the volatile topology tables are persisted.
+func (e *StateEngine) PersistVolatile() bool {
+	return e.persistVolatile.Load()
 }
 
 // --- Weak-persist methods (dirty-mark only) ---
@@ -100,28 +132,28 @@ func (e *StateEngine) MarkNodeStaticDelete(hash string) {
 }
 
 func (e *StateEngine) MarkNodeDynamic(hash string) {
-	if !e.persistEnabled.Load() {
+	if !e.persistEnabled.Load() || !e.persistVolatile.Load() {
 		return
 	}
 	e.dirtyNodesDynamic.MarkUpsert(hash)
 }
 
 func (e *StateEngine) MarkNodeDynamicDelete(hash string) {
-	if !e.persistEnabled.Load() {
+	if !e.persistEnabled.Load() || !e.persistVolatile.Load() {
 		return
 	}
 	e.dirtyNodesDynamic.MarkDelete(hash)
 }
 
 func (e *StateEngine) MarkNodeLatency(nodeHash, domain string) {
-	if !e.persistEnabled.Load() {
+	if !e.persistEnabled.Load() || !e.persistVolatile.Load() {
 		return
 	}
 	e.dirtyNodeLatency.MarkUpsert(NodeLatencyDirtyKey{NodeHash: nodeHash, Domain: domain})
 }
 
 func (e *StateEngine) MarkNodeLatencyDelete(nodeHash, domain string) {
-	if !e.persistEnabled.Load() {
+	if !e.persistEnabled.Load() || !e.persistVolatile.Load() {
 		return
 	}
 	e.dirtyNodeLatency.MarkDelete(NodeLatencyDirtyKey{NodeHash: nodeHash, Domain: domain})

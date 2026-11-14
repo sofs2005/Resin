@@ -65,6 +65,11 @@ type EnvConfig struct {
 	// and the CacheFlushWorker never starts, so steady-state cache.db writes are
 	// exactly zero.
 	CachePersist bool
+	// CachePersistVolatile widens CachePersist to the volatile topology tables
+	// (nodes_dynamic, node_latency). When false (default) those tables are never
+	// written: probe results and latency samples live in memory only and are
+	// recomputed after a restart. Only meaningful when CachePersist is on.
+	CachePersistVolatile bool
 	// RequestLogStorage selects where request logs are stored: memory|sqlite.
 	RequestLogStorage string
 	// RequestLogMemoryEntries caps the in-memory request-log ring buffer
@@ -188,6 +193,7 @@ func LoadEnvConfig() (*EnvConfig, error) {
 
 	// --- Persistence modes (memory-first) ---
 	cfg.CachePersist = envOnOff("RESIN_CACHE_PERSIST", false, &errs)
+	cfg.CachePersistVolatile = envOnOff("RESIN_CACHE_PERSIST_VOLATILE", false, &errs)
 	cfg.RequestLogStorage = envStorageMode("RESIN_REQUEST_LOG_STORAGE", StorageModeMemory, &errs)
 	cfg.RequestLogMemoryEntries = envInt("RESIN_REQUEST_LOG_MEMORY_ENTRIES", 10000, &errs)
 	cfg.MetricsStorage = envStorageMode("RESIN_METRICS_STORAGE", StorageModeMemory, &errs)
